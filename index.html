@@ -527,6 +527,15 @@
   .interruption-close-btn {
     position: absolute;
     transform: translate(-50%, -50%);
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.3rem;
+    line-height: 1;
   }
 
   /* Zen mode: hides everything but the stimulus itself during play (top
@@ -673,7 +682,7 @@
             <p><strong>eWMT mode</strong> — while the number is on screen, the square behind it also shows an image, drawn from whichever categories you've selected below. The image appears and disappears in step with the number itself; it has no effect on scoring. Pick <strong>Custom</strong> to draw from images you upload yourself — they're stored locally in this browser, not uploaded anywhere.</p>
           </div>
           <div id="interruption-instructions" class="hidden">
-            <p><strong>Interruption mode</strong> — at a random point, with no warning, the screen cuts to black, an alarm beep starts, and a <strong>Close</strong> button appears somewhere on it. Find it and press it to keep going.</p>
+            <p><strong>Interruption mode</strong> — at a random point, with no warning, the screen cuts to black, an alarm beep starts, and a small <strong>×</strong> button appears somewhere on it. Click it to keep going — though it may just teleport to a new spot instead of closing, based on the probability below.</p>
             <p>Closing it picks the session back up right where you left off — your timer and accuracy aren't affected. Whether it also <strong>breaks your streak</strong> — costing you progress toward your next speed-up, and your longest streak for the session — is up to the toggle below.</p>
           </div>
         </div>
@@ -868,6 +877,11 @@
         <input type="range" id="interruption-chance-slider" min="1" max="100" step="1">
       </div>
 
+      <div class="field" id="interruption-teleport-chance-field">
+        <label>The probability that the close button will teleport after you click it: <span class="readout" id="interruption-teleport-chance-value"></span></label>
+        <input type="range" id="interruption-teleport-chance-slider" min="0" max="100" step="1">
+      </div>
+
       <div class="field" id="interruption-beep-volume-field">
         <label>Interruption beep volume <span class="readout" id="interruption-beep-value"></span></label>
         <div class="volume-row">
@@ -973,7 +987,7 @@
     </div>
 
     <div class="interruption-overlay hidden" id="interruption-overlay">
-      <button type="button" id="interruption-close-btn" class="btn btn-primary interruption-close-btn">Close</button>
+      <button type="button" id="interruption-close-btn" class="btn btn-primary interruption-close-btn" aria-label="Close">×</button>
     </div>
   </section>
 
@@ -1355,15 +1369,20 @@
     // Interruption mode (optional, off by default): each trial has a
     // chance — interruptionChance, a plain percent — to cut the screen to
     // black with an alarm beep (at its own interruptionBeepVolume)
-    // repeating until "Close" is found and pressed. Closing it resumes
-    // the session right where it left off — timer and accuracy untouched,
-    // same as an ordinary pause. Whether it also zeroes
+    // repeating until the small × button is found and clicked. Each
+    // click has its own chance — interruptionTeleportChance — of just
+    // relocating the button instead of actually closing the
+    // interruption; 0 (the default) means every click closes it, same
+    // as before this existed. Closing it resumes the session right
+    // where it left off — timer and accuracy untouched, same as an
+    // ordinary pause. Whether it also zeroes
     // correctStreak/incorrectStreak/currentStreak (the actual "streak
     // break") is up to interruptionBreaksStreak below, defaulted to true.
     // See triggerInterruption/closeInterruption.
     interruptionMode: false,
     interruptionChance: 10, // percent chance per trial, 1-100 — see rollInterruption
     interruptionBeepVolume: 50,
+    interruptionTeleportChance: 0, // percent chance per click that it relocates instead of closing, 0-100
     interruptionBreaksStreak: true
   };
 
@@ -1450,6 +1469,7 @@
       var legacyChance = { low: 10, mid: 25, max: 40 }[s.interruptionLevel];
       interruptionChance = legacyChance === undefined ? DEFAULT_SETTINGS.interruptionChance : legacyChance;
     }
+    var interruptionTeleportChance = parseInt(s.interruptionTeleportChance, 10);
     var floorMs = parseInt(s.adaptiveFloorMs, 10);
     var ceilingMs = parseInt(s.adaptiveCeilingMs, 10);
     var nBackLevel = parseInt(s.nBackLevel, 10);
@@ -1484,6 +1504,7 @@
       interruptionMode: !!s.interruptionMode,
       interruptionChance: clamp(interruptionChance, 1, 100),
       interruptionBeepVolume: clamp(isNaN(interruptionBeepVol) ? DEFAULT_SETTINGS.interruptionBeepVolume : interruptionBeepVol, 0, 100),
+      interruptionTeleportChance: clamp(isNaN(interruptionTeleportChance) ? DEFAULT_SETTINGS.interruptionTeleportChance : interruptionTeleportChance, 0, 100),
       interruptionBreaksStreak: s.interruptionBreaksStreak === undefined ? DEFAULT_SETTINGS.interruptionBreaksStreak : !!s.interruptionBreaksStreak
     };
   }
@@ -2363,6 +2384,21 @@
     countdownIntervalId = setInterval(updateCountdownDisplay, 250);
   }
 
+  // Rolled on every click of the close button — unlike rollInterruption
+  // above, which is rolled once per trial. interruptionTeleportChance is
+  // the odds that a given click just relocates the button, via the exact
+  // same positionInterruptionCloseBtn used when the interruption first
+  // fires, instead of actually calling closeInterruption. 0 (the
+  // default) means every click closes it, same as before this existed.
+  function handleInterruptionCloseClick() {
+    if (Math.random() < (state.settings.interruptionTeleportChance / 100)) {
+      positionInterruptionCloseBtn();
+      el.interruptionCloseBtn.focus();
+      return;
+    }
+    closeInterruption();
+  }
+
   // ============================================================
   // Trial engine — lookahead audio scheduler.
   //
@@ -3047,12 +3083,13 @@
     applyFeedbackBeepVolumeVisibility();
   }
 
-  // The frequency slider, the beep-volume slider, the "breaks streak"
-  // toggle, and the instructions blurb only mean anything once
-  // interruption mode itself is on — same idea as
+  // The frequency slider, the teleport-chance slider, the beep-volume
+  // slider, the "breaks streak" toggle, and the instructions blurb only
+  // mean anything once interruption mode itself is on — same idea as
   // applyNBackFieldVisibility.
   function applyInterruptionFieldVisibility() {
     el.interruptionChanceField.classList.toggle('hidden', !state.settings.interruptionMode);
+    el.interruptionTeleportChanceField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionBeepVolumeField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionBreaksStreakField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionInstructions.classList.toggle('hidden', !state.settings.interruptionMode);
@@ -3189,6 +3226,8 @@
     el.interruptionToggle.checked = state.settings.interruptionMode;
     el.interruptionChanceSlider.value = state.settings.interruptionChance;
     el.interruptionChanceValue.textContent = state.settings.interruptionChance + '%';
+    el.interruptionTeleportChanceSlider.value = state.settings.interruptionTeleportChance;
+    el.interruptionTeleportChanceValue.textContent = state.settings.interruptionTeleportChance + '%';
     el.interruptionBeepVolume.value = state.settings.interruptionBeepVolume;
     el.interruptionBeepValue.textContent = state.settings.interruptionBeepVolume + '%';
     el.interruptionBreaksStreakToggle.checked = state.settings.interruptionBreaksStreak;
@@ -3346,6 +3385,12 @@
     el.interruptionChanceSlider.addEventListener('input', function () {
       state.settings.interruptionChance = parseInt(el.interruptionChanceSlider.value, 10);
       el.interruptionChanceValue.textContent = state.settings.interruptionChance + '%';
+      persistSettings();
+    });
+
+    el.interruptionTeleportChanceSlider.addEventListener('input', function () {
+      state.settings.interruptionTeleportChance = parseInt(el.interruptionTeleportChanceSlider.value, 10);
+      el.interruptionTeleportChanceValue.textContent = state.settings.interruptionTeleportChance + '%';
       persistSettings();
     });
 
@@ -3548,7 +3593,7 @@
     el.mobilePositiveBtn.addEventListener('click', function () { handleResponse('positive'); });
     el.mobileNegativeBtn.addEventListener('click', function () { handleResponse('negative'); });
     el.zenPauseBtn.addEventListener('click', pauseSession);
-    el.interruptionCloseBtn.addEventListener('click', closeInterruption);
+    el.interruptionCloseBtn.addEventListener('click', handleInterruptionCloseClick);
   }
 
   function wireReport() {
@@ -3606,6 +3651,9 @@
     el.interruptionChanceField = q('interruption-chance-field');
     el.interruptionChanceSlider = q('interruption-chance-slider');
     el.interruptionChanceValue = q('interruption-chance-value');
+    el.interruptionTeleportChanceField = q('interruption-teleport-chance-field');
+    el.interruptionTeleportChanceSlider = q('interruption-teleport-chance-slider');
+    el.interruptionTeleportChanceValue = q('interruption-teleport-chance-value');
     el.interruptionBeepVolumeField = q('interruption-beep-volume-field');
     el.interruptionBeepVolume = q('interruption-beep-volume');
     el.interruptionBeepValue = q('interruption-beep-value');
