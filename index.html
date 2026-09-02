@@ -537,6 +537,19 @@
     font-size: 1.3rem;
     line-height: 1;
   }
+  /* Fixed top-center, clear of the close button's random position.
+     Only shown while interruptionTimeCrunch is on for this interruption
+     — see triggerInterruption/updateInterruptionTimeCrunch. */
+  .interruption-time-crunch-countdown {
+    position: absolute;
+    top: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--font-mono);
+    font-size: 2.5rem;
+    font-weight: 700;
+    color: var(--amber);
+  }
 
   /* Zen mode: hides everything but the stimulus itself during play (top
      bar stats/controls, key hints). Mobile-mode's on-screen response
@@ -810,6 +823,11 @@
         <input type="color" id="dichotic-visual-color" class="color-input">
       </div>
 
+      <div class="field field-toggle" id="dichotic-easy-switch-field">
+        <label for="dichotic-easy-switch-toggle">Same number on switch <span class="dim">(both ears play the same number right after the target ear changes)</span></label>
+        <label class="switch"><input type="checkbox" id="dichotic-easy-switch-toggle"><span class="switch-track"></span></label>
+      </div>
+
       <div class="field field-toggle">
         <label for="ewmt-toggle">eWMT mode <span class="dim">(background image behind the number)</span></label>
         <label class="switch"><input type="checkbox" id="ewmt-toggle"><span class="switch-track"></span></label>
@@ -893,6 +911,16 @@
       <div class="field field-toggle" id="interruption-breaks-streak-field">
         <label for="interruption-breaks-streak-toggle">Interruption breaks streak <span class="dim">(off = interruptions don't cost you progress)</span></label>
         <label class="switch"><input type="checkbox" id="interruption-breaks-streak-toggle"><span class="switch-track"></span></label>
+      </div>
+
+      <div class="field field-toggle" id="interruption-time-crunch-field">
+        <label for="interruption-time-crunch-toggle">Time crunch <span class="dim">(respond in time or get bounced to the main menu)</span></label>
+        <label class="switch"><input type="checkbox" id="interruption-time-crunch-toggle"><span class="switch-track"></span></label>
+      </div>
+
+      <div class="field" id="interruption-time-crunch-seconds-field">
+        <label>Time crunch limit <span class="readout" id="interruption-time-crunch-seconds-value"></span></label>
+        <input type="range" id="interruption-time-crunch-seconds-slider" min="1" max="5" step="1">
       </div>
 
       <details class="field field-dropdown" id="weights-dropdown">
@@ -987,6 +1015,7 @@
     </div>
 
     <div class="interruption-overlay hidden" id="interruption-overlay">
+      <div class="interruption-time-crunch-countdown hidden" id="interruption-time-crunch-countdown"></div>
       <button type="button" id="interruption-close-btn" class="btn btn-primary interruption-close-btn" aria-label="Close">×</button>
     </div>
   </section>
@@ -1316,6 +1345,14 @@
     voice: 'male',       // which pre-recorded voice speaks in non-dichotic mode ('male' | 'female'); dichotic mode always uses both
     mobileMode: false,
     dichoticMode: false,
+    // Optional: on the trial where the target ear switches, play the
+    // SAME number in both ears instead of two independent ones — an
+    // easier landing, since whichever ear the player is still (mid-
+    // redirect) attending to still gives the right number. Only
+    // overwrites the distractor ear's digit; the new target ear's digit
+    // — and so the running arithmetic sequence — is untouched either
+    // way. See prepareAndScheduleTrial's isSwitchTrial branch.
+    dichoticEasySwitch: false,
     zenMode: false,
     // N-back mode (optional): when on, the visually-judged sum pairs the
     // current digit with the one nBackLevel positions back (2-10) instead
@@ -1375,15 +1412,21 @@
     // interruption; 0 (the default) means every click closes it, same
     // as before this existed. Closing it resumes the session right
     // where it left off — timer and accuracy untouched, same as an
-    // ordinary pause. Whether it also zeroes
+    // ordinary pause, UNLESS interruptionTimeCrunch is also on: then
+    // there's a hard deadline (interruptionTimeCrunchSeconds, 1-5,
+    // shared across any teleports) to close it at all, and missing it
+    // aborts the whole session back to the main menu instead — no
+    // report, no history entry. Whether closing it in time also zeroes
     // correctStreak/incorrectStreak/currentStreak (the actual "streak
     // break") is up to interruptionBreaksStreak below, defaulted to true.
-    // See triggerInterruption/closeInterruption.
+    // See triggerInterruption/closeInterruption/handleTimeCrunchExpired.
     interruptionMode: false,
     interruptionChance: 10, // percent chance per trial, 1-100 — see rollInterruption
     interruptionBeepVolume: 50,
     interruptionTeleportChance: 0, // percent chance per click that it relocates instead of closing, 0-100
-    interruptionBreaksStreak: true
+    interruptionBreaksStreak: true,
+    interruptionTimeCrunch: false, // off by default — see handleTimeCrunchExpired
+    interruptionTimeCrunchSeconds: 3 // 1-5, only used while interruptionTimeCrunch is on
   };
 
   // ============================================================
@@ -1470,6 +1513,7 @@
       interruptionChance = legacyChance === undefined ? DEFAULT_SETTINGS.interruptionChance : legacyChance;
     }
     var interruptionTeleportChance = parseInt(s.interruptionTeleportChance, 10);
+    var timeCrunchSec = parseInt(s.interruptionTimeCrunchSeconds, 10);
     var floorMs = parseInt(s.adaptiveFloorMs, 10);
     var ceilingMs = parseInt(s.adaptiveCeilingMs, 10);
     var nBackLevel = parseInt(s.nBackLevel, 10);
@@ -1485,6 +1529,7 @@
       voice: s.voice === 'female' ? 'female' : 'male',
       mobileMode: !!s.mobileMode,
       dichoticMode: !!s.dichoticMode,
+      dichoticEasySwitch: !!s.dichoticEasySwitch,
       zenMode: !!s.zenMode,
       nBackMode: !!s.nBackMode,
       nBackLevel: clamp(isNaN(nBackLevel) ? DEFAULT_SETTINGS.nBackLevel : nBackLevel, MIN_NBACK_LEVEL, MAX_NBACK_LEVEL),
@@ -1505,7 +1550,9 @@
       interruptionChance: clamp(interruptionChance, 1, 100),
       interruptionBeepVolume: clamp(isNaN(interruptionBeepVol) ? DEFAULT_SETTINGS.interruptionBeepVolume : interruptionBeepVol, 0, 100),
       interruptionTeleportChance: clamp(isNaN(interruptionTeleportChance) ? DEFAULT_SETTINGS.interruptionTeleportChance : interruptionTeleportChance, 0, 100),
-      interruptionBreaksStreak: s.interruptionBreaksStreak === undefined ? DEFAULT_SETTINGS.interruptionBreaksStreak : !!s.interruptionBreaksStreak
+      interruptionBreaksStreak: s.interruptionBreaksStreak === undefined ? DEFAULT_SETTINGS.interruptionBreaksStreak : !!s.interruptionBreaksStreak,
+      interruptionTimeCrunch: !!s.interruptionTimeCrunch,
+      interruptionTimeCrunchSeconds: clamp(isNaN(timeCrunchSec) ? DEFAULT_SETTINGS.interruptionTimeCrunchSeconds : timeCrunchSec, 1, 5)
     };
   }
 
@@ -1622,6 +1669,7 @@
   var dichoticVisualTimerId = null;
   var countdownIntervalId = null;
   var interruptionBeepIntervalId = null; // repeating alarm while an interruption is up — see triggerInterruption/closeInterruption
+  var interruptionTimeCrunchIntervalId = null; // ticks the on-screen countdown while interruptionTimeCrunch is on — see updateInterruptionTimeCrunch
   var audioCtx = null;
   var ticker = null; // scheduler "tick" source - a Worker when available, else a plain interval
 
@@ -2339,6 +2387,21 @@
     el.interruptionOverlay.classList.remove('hidden');
     el.interruptionCloseBtn.focus();
 
+    // Time crunch: one deadline for the whole interruption, from right
+    // here until closeInterruption actually fires — a teleporting click
+    // (see handleInterruptionCloseClick) doesn't grant extra time, it
+    // just eats into what's left. See updateInterruptionTimeCrunch for
+    // the countdown display/expiry check itself.
+    clearInterval(interruptionTimeCrunchIntervalId);
+    if (state.settings.interruptionTimeCrunch) {
+      state.interruptionDeadline = performance.now() + state.settings.interruptionTimeCrunchSeconds * 1000;
+      el.interruptionTimeCrunchCountdown.classList.remove('hidden');
+      updateInterruptionTimeCrunch();
+      interruptionTimeCrunchIntervalId = setInterval(updateInterruptionTimeCrunch, 100);
+    } else {
+      el.interruptionTimeCrunchCountdown.classList.add('hidden');
+    }
+
     // Alarm beep — the same tone as the wrong-answer feedback beep (see
     // playBeep/evaluateTrial), just at its own interruptionBeepVolume
     // rather than feedbackBeepVolume, repeating for as long as the black
@@ -2367,6 +2430,9 @@
   function closeInterruption() {
     clearInterval(interruptionBeepIntervalId);
     interruptionBeepIntervalId = null;
+    clearInterval(interruptionTimeCrunchIntervalId);
+    interruptionTimeCrunchIntervalId = null;
+    el.interruptionTimeCrunchCountdown.classList.add('hidden');
     el.interruptionOverlay.classList.add('hidden');
 
     state.sessionEndAt += performance.now() - state.interruptedAt;
@@ -2397,6 +2463,42 @@
       return;
     }
     closeInterruption();
+  }
+
+  // Ticks the on-screen countdown at 100ms resolution — finer than the
+  // main session timer's 250ms (updateCountdownDisplay) since this
+  // window is only ever 1-5 seconds and every tenth of a second reads
+  // as meaningful at that scale. Also the thing that actually notices
+  // the deadline passing and hands off to handleTimeCrunchExpired.
+  function updateInterruptionTimeCrunch() {
+    var remainingSec = (state.interruptionDeadline - performance.now()) / 1000;
+    if (remainingSec <= 0) {
+      handleTimeCrunchExpired();
+      return;
+    }
+    el.interruptionTimeCrunchCountdown.textContent = remainingSec.toFixed(1) + 's';
+  }
+
+  // The deadline won — a hard fail, not a graceful end. Unlike
+  // endSession (which refuses to run mid-interruption and shows the
+  // report), this discards the session outright: no report, no history
+  // entry, straight back to the main menu.
+  function handleTimeCrunchExpired() {
+    clearInterval(interruptionBeepIntervalId);
+    interruptionBeepIntervalId = null;
+    clearInterval(interruptionTimeCrunchIntervalId);
+    interruptionTimeCrunchIntervalId = null;
+    el.interruptionOverlay.classList.add('hidden');
+    el.interruptionTimeCrunchCountdown.classList.add('hidden');
+    state.interrupted = false;
+    stopTicker();
+    clearTimeout(showTimerId);
+    clearTimeout(hideTimerId);
+    clearTimeout(dichoticVisualTimerId);
+    clearInterval(countdownIntervalId);
+    stopAllPendingAudio();
+    hideDichoticVisualCue();
+    showScreen('menu');
   }
 
   // ============================================================
@@ -2474,6 +2576,15 @@
         // with a digit from before it (see stepDigitHistory below).
         state.dichotic.trialsUntilSwitch = DICHOTIC_SWITCH_MIN_TRIALS +
           Math.floor(Math.random() * (DICHOTIC_SWITCH_MAX_TRIALS - DICHOTIC_SWITCH_MIN_TRIALS + 1));
+        // Optional easier landing (dichoticEasySwitch): make this switch
+        // trial play the same number in both ears. Only the distractor
+        // ear's digit gets overwritten, to whatever the new target ear
+        // already rolled — digit below, and so the running arithmetic
+        // sequence, comes out exactly the same either way.
+        if (state.settings.dichoticEasySwitch) {
+          if (state.dichotic.targetEar === 'L') { digitRight = digitLeft; }
+          else { digitLeft = digitRight; }
+        }
       }
       state.dichotic.trialsUntilSwitch--;
 
@@ -3084,14 +3195,18 @@
   }
 
   // The frequency slider, the teleport-chance slider, the beep-volume
-  // slider, the "breaks streak" toggle, and the instructions blurb only
-  // mean anything once interruption mode itself is on — same idea as
-  // applyNBackFieldVisibility.
+  // slider, the "breaks streak" toggle, the "time crunch" toggle, and
+  // the instructions blurb only mean anything once interruption mode
+  // itself is on — same idea as applyNBackFieldVisibility. The time
+  // crunch seconds slider is nested one level deeper: it only means
+  // anything once BOTH interruption mode and time crunch are on.
   function applyInterruptionFieldVisibility() {
     el.interruptionChanceField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionTeleportChanceField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionBeepVolumeField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionBreaksStreakField.classList.toggle('hidden', !state.settings.interruptionMode);
+    el.interruptionTimeCrunchField.classList.toggle('hidden', !state.settings.interruptionMode);
+    el.interruptionTimeCrunchSecondsField.classList.toggle('hidden', !(state.settings.interruptionMode && state.settings.interruptionTimeCrunch));
     el.interruptionInstructions.classList.toggle('hidden', !state.settings.interruptionMode);
   }
 
@@ -3123,6 +3238,12 @@
     el.dichoticVisualHelpField.classList.toggle('hidden', !state.settings.dichoticMode);
     el.dichoticVisualColorField.classList.toggle('hidden',
       !(state.settings.dichoticMode && state.settings.dichoticVisualHelp));
+  }
+
+  // Same idea as applyDichoticCueVolumeVisibility — only means anything
+  // once dichotic mode itself is on.
+  function applyDichoticEasySwitchVisibility() {
+    el.dichoticEasySwitchField.classList.toggle('hidden', !state.settings.dichoticMode);
   }
 
   // Dichotic mode always speaks both voices at once (male left, female
@@ -3231,6 +3352,9 @@
     el.interruptionBeepVolume.value = state.settings.interruptionBeepVolume;
     el.interruptionBeepValue.textContent = state.settings.interruptionBeepVolume + '%';
     el.interruptionBreaksStreakToggle.checked = state.settings.interruptionBreaksStreak;
+    el.interruptionTimeCrunchToggle.checked = state.settings.interruptionTimeCrunch;
+    el.interruptionTimeCrunchSecondsSlider.value = state.settings.interruptionTimeCrunchSeconds;
+    el.interruptionTimeCrunchSecondsValue.textContent = state.settings.interruptionTimeCrunchSeconds + 's';
     applyInterruptionFieldVisibility();
 
     el.weightSum.value = state.settings.stimulusWeights.sum;
@@ -3252,10 +3376,12 @@
     el.dichoticCueValue.textContent = state.settings.dichoticCueVolume + '%';
     el.dichoticVisualHelpToggle.checked = state.settings.dichoticVisualHelp;
     el.dichoticVisualColor.value = state.settings.dichoticVisualColor;
+    el.dichoticEasySwitchToggle.checked = state.settings.dichoticEasySwitch;
     applyFeedbackBeepVolumeVisibility();
     applyDichoticCueVolumeVisibility();
     applyDichoticInstructionsVisibility();
     applyDichoticVisualHelpVisibility();
+    applyDichoticEasySwitchVisibility();
     applyVoiceSelectVisibility();
     el.mobileToggle.checked = state.settings.mobileMode;
     el.zenToggle.checked = state.settings.zenMode;
@@ -3410,6 +3536,18 @@
       persistSettings();
     });
 
+    el.interruptionTimeCrunchToggle.addEventListener('change', function () {
+      state.settings.interruptionTimeCrunch = el.interruptionTimeCrunchToggle.checked;
+      applyInterruptionFieldVisibility();
+      persistSettings();
+    });
+
+    el.interruptionTimeCrunchSecondsSlider.addEventListener('input', function () {
+      state.settings.interruptionTimeCrunchSeconds = parseInt(el.interruptionTimeCrunchSecondsSlider.value, 10);
+      el.interruptionTimeCrunchSecondsValue.textContent = state.settings.interruptionTimeCrunchSeconds + 's';
+      persistSettings();
+    });
+
     el.keysToggle.addEventListener('click', function (e) {
       var btn = e.target.closest('.seg-btn');
       if (!btn) return;
@@ -3462,7 +3600,13 @@
       applyDichoticCueVolumeVisibility();
       applyDichoticInstructionsVisibility();
       applyDichoticVisualHelpVisibility();
+      applyDichoticEasySwitchVisibility();
       applyVoiceSelectVisibility();
+      persistSettings();
+    });
+
+    el.dichoticEasySwitchToggle.addEventListener('change', function () {
+      state.settings.dichoticEasySwitch = el.dichoticEasySwitchToggle.checked;
       persistSettings();
     });
 
@@ -3660,6 +3804,11 @@
     el.testInterruptionBeepBtn = q('test-interruption-beep-btn');
     el.interruptionBreaksStreakField = q('interruption-breaks-streak-field');
     el.interruptionBreaksStreakToggle = q('interruption-breaks-streak-toggle');
+    el.interruptionTimeCrunchField = q('interruption-time-crunch-field');
+    el.interruptionTimeCrunchToggle = q('interruption-time-crunch-toggle');
+    el.interruptionTimeCrunchSecondsField = q('interruption-time-crunch-seconds-field');
+    el.interruptionTimeCrunchSecondsSlider = q('interruption-time-crunch-seconds-slider');
+    el.interruptionTimeCrunchSecondsValue = q('interruption-time-crunch-seconds-value');
     el.interruptionInstructions = q('interruption-instructions');
     el.responseRulesDefault = q('response-rules-default');
     el.responseRulesCct = q('response-rules-cct');
@@ -3697,6 +3846,8 @@
     el.dichoticVisualHelpToggle = q('dichotic-visual-help-toggle');
     el.dichoticVisualColorField = q('dichotic-visual-color-field');
     el.dichoticVisualColor = q('dichotic-visual-color');
+    el.dichoticEasySwitchField = q('dichotic-easy-switch-field');
+    el.dichoticEasySwitchToggle = q('dichotic-easy-switch-toggle');
     el.mobileToggle = q('mobile-toggle');
     el.zenToggle = q('zen-toggle');
     el.ewmtToggle = q('ewmt-toggle');
@@ -3736,6 +3887,7 @@
     el.zenPauseBtn = q('zen-pause-btn');
     el.interruptionOverlay = q('interruption-overlay');
     el.interruptionCloseBtn = q('interruption-close-btn');
+    el.interruptionTimeCrunchCountdown = q('interruption-time-crunch-countdown');
 
     el.overallAccuracyValue = q('overall-accuracy-value');
     el.sumAccuracy = q('sum-accuracy');
