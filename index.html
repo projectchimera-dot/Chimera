@@ -965,6 +965,16 @@
         <input type="range" id="interruption-time-crunch-seconds-slider" min="1" max="5" step="1">
       </div>
 
+      <div class="field field-toggle" id="interruption-error-chance-field">
+        <label for="interruption-error-chance-toggle">Different chance on error <span class="dim">(use a separate interruption frequency right after a wrong answer)</span></label>
+        <label class="switch"><input type="checkbox" id="interruption-error-chance-toggle"><span class="switch-track"></span></label>
+      </div>
+
+      <div class="field" id="interruption-error-chance-slider-field">
+        <label>Interruption frequency after an error <span class="readout" id="interruption-error-chance-value"></span></label>
+        <input type="range" id="interruption-error-chance-slider" min="0" max="100" step="1">
+      </div>
+
       <details class="field field-dropdown" id="weights-dropdown">
         <summary class="field-dropdown-summary"><span class="field-dropdown-arrow" aria-hidden="true">▸</span>Number type probabilities</summary>
         <div class="field-dropdown-body">
@@ -985,6 +995,27 @@
           <button type="button" id="weights-reset-btn" class="btn btn-ghost btn-sm weight-reset-btn">Reset to defaults</button>
         </div>
       </details>
+
+      <div class="field field-toggle" id="variable-loudness-field">
+        <label for="variable-loudness-toggle">Variable sound loudness <span class="dim">(randomize the digit volume within a range, every trial)</span></label>
+        <label class="switch"><input type="checkbox" id="variable-loudness-toggle"><span class="switch-track"></span></label>
+      </div>
+
+      <div class="field" id="variable-loudness-min-field">
+        <label>Lowest volume in range <span class="readout" id="variable-loudness-min-value"></span></label>
+        <div class="volume-row">
+          <input type="range" id="variable-loudness-min-slider" min="0" max="100" step="5">
+          <button type="button" id="test-variable-loudness-min-btn" class="btn btn-ghost btn-sm">Test</button>
+        </div>
+      </div>
+
+      <div class="field" id="variable-loudness-max-field">
+        <label>Highest volume in range <span class="readout" id="variable-loudness-max-value"></span></label>
+        <div class="volume-row">
+          <input type="range" id="variable-loudness-max-slider" min="0" max="100" step="5">
+          <button type="button" id="test-variable-loudness-max-btn" class="btn btn-ghost btn-sm">Test</button>
+        </div>
+      </div>
 
       <details class="field field-dropdown" id="chimera-links-dropdown">
         <summary class="field-dropdown-summary"><span class="field-dropdown-arrow" aria-hidden="true">▸</span>Learn more about the Chimera</summary>
@@ -1413,6 +1444,16 @@
     // than feedbackBeepVolume's beep does in normal mode.
     cctBeepVolume: 50,
     voice: 'male',       // which pre-recorded voice speaks in non-dichotic mode ('male' | 'female'); dichotic mode always uses both
+    // Variable sound loudness (optional, off by default): each trial's
+    // digit volume is redrawn uniformly at random between
+    // variableLoudnessMin and variableLoudnessMax (percent, applied as a
+    // gain multiplier after the voice enhancement chain — see
+    // scheduleDigitBuffer) instead of always playing at full volume.
+    // Both ears of a dichotic trial share the same roll. See
+    // prepareAndScheduleTrial's digitVolume.
+    variableLoudness: false,
+    variableLoudnessMin: 60,
+    variableLoudnessMax: 100,
     mobileMode: false,
     dichoticMode: false,
     // Optional: on the trial where the target ear switches, play the
@@ -1496,7 +1537,12 @@
     interruptionTeleportChance: 0, // percent chance per click that it relocates instead of closing, 0-100
     interruptionBreaksStreak: true,
     interruptionTimeCrunch: false, // off by default — see handleTimeCrunchExpired
-    interruptionTimeCrunchSeconds: 3 // 1-5, only used while interruptionTimeCrunch is on
+    interruptionTimeCrunchSeconds: 3, // 1-5, only used while interruptionTimeCrunch is on
+    // Optional: use a different frequency for the roll right after the
+    // player gets a trial wrong, instead of always using
+    // interruptionChance — see rollInterruption.
+    interruptionErrorChanceEnabled: false,
+    interruptionErrorChance: 25 // percent, 0-100 — replaces interruptionChance for that one roll
   };
 
   // ============================================================
@@ -1584,6 +1630,9 @@
     }
     var interruptionTeleportChance = parseInt(s.interruptionTeleportChance, 10);
     var timeCrunchSec = parseInt(s.interruptionTimeCrunchSeconds, 10);
+    var interruptionErrorChance = parseInt(s.interruptionErrorChance, 10);
+    var loudnessMin = parseInt(s.variableLoudnessMin, 10);
+    var loudnessMax = parseInt(s.variableLoudnessMax, 10);
     var floorMs = parseInt(s.adaptiveFloorMs, 10);
     var ceilingMs = parseInt(s.adaptiveCeilingMs, 10);
     var nBackLevel = parseInt(s.nBackLevel, 10);
@@ -1597,6 +1646,9 @@
       dichoticCueVolume: clamp(isNaN(dichoticVol) ? DEFAULT_SETTINGS.dichoticCueVolume : dichoticVol, 0, 100),
       cctBeepVolume: clamp(isNaN(cctVol) ? DEFAULT_SETTINGS.cctBeepVolume : cctVol, 0, 100),
       voice: s.voice === 'female' ? 'female' : 'male',
+      variableLoudness: !!s.variableLoudness,
+      variableLoudnessMin: clamp(isNaN(loudnessMin) ? DEFAULT_SETTINGS.variableLoudnessMin : loudnessMin, 0, 100),
+      variableLoudnessMax: clamp(isNaN(loudnessMax) ? DEFAULT_SETTINGS.variableLoudnessMax : loudnessMax, 0, 100),
       mobileMode: !!s.mobileMode,
       dichoticMode: !!s.dichoticMode,
       dichoticEasySwitch: !!s.dichoticEasySwitch,
@@ -1622,7 +1674,9 @@
       interruptionTeleportChance: clamp(isNaN(interruptionTeleportChance) ? DEFAULT_SETTINGS.interruptionTeleportChance : interruptionTeleportChance, 0, 100),
       interruptionBreaksStreak: s.interruptionBreaksStreak === undefined ? DEFAULT_SETTINGS.interruptionBreaksStreak : !!s.interruptionBreaksStreak,
       interruptionTimeCrunch: !!s.interruptionTimeCrunch,
-      interruptionTimeCrunchSeconds: clamp(isNaN(timeCrunchSec) ? DEFAULT_SETTINGS.interruptionTimeCrunchSeconds : timeCrunchSec, 1, 5)
+      interruptionTimeCrunchSeconds: clamp(isNaN(timeCrunchSec) ? DEFAULT_SETTINGS.interruptionTimeCrunchSeconds : timeCrunchSec, 1, 5),
+      interruptionErrorChanceEnabled: !!s.interruptionErrorChanceEnabled,
+      interruptionErrorChance: clamp(isNaN(interruptionErrorChance) ? DEFAULT_SETTINGS.interruptionErrorChance : interruptionErrorChance, 0, 100)
     };
   }
 
@@ -1968,7 +2022,13 @@
 
   // Schedules one digit to start at the precise audio-clock time `when`.
   // pan: -1 full left, +1 full right, anything else = center (both ears).
-  function scheduleDigitBuffer(digit, when, pan, rate, buffers) {
+  // volume: 0-1 gain multiplier, applied AFTER the voice enhancement
+  // chain (see buildVoiceEnhancementChain) rather than mixed into it, so
+  // it comes through as a real level change instead of being partly
+  // evened back out by that chain's own compressor. Omit/undefined for
+  // full volume (1) — see prepareAndScheduleTrial for the per-trial
+  // random draw when variableLoudness is on.
+  function scheduleDigitBuffer(digit, when, pan, rate, buffers, volume) {
     if (!audioCtx) return null;
     var buf = (buffers || digitBuffersA)[digit];
     if (!buf) return null;
@@ -1983,6 +2043,11 @@
     var chain = buildVoiceEnhancementChain(audioCtx);
     src.connect(chain.input);
     var tail = chain.output;
+
+    var loudnessGain = audioCtx.createGain();
+    loudnessGain.gain.setValueAtTime(volume === undefined ? 1 : volume, when);
+    tail.connect(loudnessGain);
+    tail = loudnessGain;
 
     var panner = null;
     if (pan === -1 || pan === 1) {
@@ -2005,6 +2070,7 @@
       if (idx !== -1) pendingSources.splice(idx, 1);
       try { src.disconnect(); } catch (e) {}
       try { chain.input.disconnect(); } catch (e) {} // tears down the rest of this instance's chain
+      try { loudnessGain.disconnect(); } catch (e) {}
     };
     pendingSources.push(src);
     try { src.start(when); } catch (e) { /* ignore - e.g. `when` already passed */ }
@@ -2433,7 +2499,15 @@
   // when this fires — just the trial sequence picking back up on resume.
   // ============================================================
   function rollInterruption() {
-    return Math.random() < (state.settings.interruptionChance / 100);
+    // state.incorrectStreak is reset to 0 by any correct answer (see
+    // evaluateTrial), so ">0" here means exactly "the most recently
+    // evaluated trial was wrong" — whether that's an isolated miss or
+    // partway through a run of them. When the player has opted into a
+    // separate error-triggered frequency, it replaces the normal one
+    // for this roll only; it doesn't stack with it.
+    var useErrorChance = state.settings.interruptionErrorChanceEnabled && state.incorrectStreak > 0;
+    var chance = useErrorChance ? state.settings.interruptionErrorChance : state.settings.interruptionChance;
+    return Math.random() < (chance / 100);
   }
 
   // Places the Close button at a random spot, clamped so it's never
@@ -2638,6 +2712,17 @@
     var digitOnset = when; // when the digit(s) actually sound - trails `when` on a switch trial (cue beep first)
     var backDist = getBackDistance();
 
+    // Variable loudness: one roll per trial, not per ear/call — so a
+    // dichotic trial's two ears share the same level rather than each
+    // independently getting its own random one. See scheduleDigitBuffer's
+    // volume parameter.
+    var digitVolume = 1;
+    if (state.settings.variableLoudness) {
+      var loMin = state.settings.variableLoudnessMin / 100;
+      var loMax = state.settings.variableLoudnessMax / 100;
+      digitVolume = loMin + Math.random() * (loMax - loMin);
+    }
+
     if (dichoticOn) {
       // Two independent ears every trial. Only the currently-targeted
       // ear's digit feeds the running sequence below — the other keeps
@@ -2687,15 +2772,15 @@
       }
       // Same `digitOnset` for both — this is what true dichotic playback
       // actually needs: both ears starting on the exact same sample.
-      scheduleDigitBuffer(digitLeft, digitOnset, -1, 1, digitBuffersA);   // left ear: male voice
-      scheduleDigitBuffer(digitRight, digitOnset, 1, 1, digitBuffersB);  // right ear: female voice
+      scheduleDigitBuffer(digitLeft, digitOnset, -1, 1, digitBuffersA, digitVolume);   // left ear: male voice
+      scheduleDigitBuffer(digitRight, digitOnset, 1, 1, digitBuffersB, digitVolume);  // right ear: female voice
     } else {
       digit = 1 + Math.floor(Math.random() * 9);
       priorDigit = stepDigitHistory(state.digitHistory, digit, backDist);
       // Non-dichotic mode speaks in whichever voice the player picked.
       var nonDichoticFemale = state.settings.voice === 'female';
       var nonDichoticBuffers = nonDichoticFemale ? digitBuffersB : digitBuffersA;
-      scheduleDigitBuffer(digit, digitOnset, null, 1, nonDichoticBuffers);
+      scheduleDigitBuffer(digit, digitOnset, null, 1, nonDichoticBuffers, digitVolume);
     }
 
     var trial = {
@@ -3445,11 +3530,12 @@
   }
 
   // The frequency slider, the teleport-chance slider, the beep-volume
-  // slider, the "breaks streak" toggle, the "time crunch" toggle, and
-  // the instructions blurb only mean anything once interruption mode
-  // itself is on — same idea as applyNBackFieldVisibility. The time
-  // crunch seconds slider is nested one level deeper: it only means
-  // anything once BOTH interruption mode and time crunch are on.
+  // slider, the "breaks streak" toggle, the "time crunch" toggle, the
+  // "different chance on error" toggle, and the instructions blurb only
+  // mean anything once interruption mode itself is on — same idea as
+  // applyNBackFieldVisibility. The time crunch seconds slider and the
+  // error-chance slider are both nested one level deeper: each only
+  // means anything once interruption mode AND its own toggle are on.
   function applyInterruptionFieldVisibility() {
     el.interruptionChanceField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionTeleportChanceField.classList.toggle('hidden', !state.settings.interruptionMode);
@@ -3457,7 +3543,16 @@
     el.interruptionBreaksStreakField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionTimeCrunchField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionTimeCrunchSecondsField.classList.toggle('hidden', !(state.settings.interruptionMode && state.settings.interruptionTimeCrunch));
+    el.interruptionErrorChanceField.classList.toggle('hidden', !state.settings.interruptionMode);
+    el.interruptionErrorChanceSliderField.classList.toggle('hidden', !(state.settings.interruptionMode && state.settings.interruptionErrorChanceEnabled));
     el.interruptionInstructions.classList.toggle('hidden', !state.settings.interruptionMode);
+  }
+
+  // The min/max test sliders only mean anything once variable loudness
+  // itself is on.
+  function applyVariableLoudnessVisibility() {
+    el.variableLoudnessMinField.classList.toggle('hidden', !state.settings.variableLoudness);
+    el.variableLoudnessMaxField.classList.toggle('hidden', !state.settings.variableLoudness);
   }
 
   // Feedback and dichotic each have their own volume slider (see the
@@ -3605,7 +3700,17 @@
     el.interruptionTimeCrunchToggle.checked = state.settings.interruptionTimeCrunch;
     el.interruptionTimeCrunchSecondsSlider.value = state.settings.interruptionTimeCrunchSeconds;
     el.interruptionTimeCrunchSecondsValue.textContent = state.settings.interruptionTimeCrunchSeconds + 's';
+    el.interruptionErrorChanceToggle.checked = state.settings.interruptionErrorChanceEnabled;
+    el.interruptionErrorChanceSlider.value = state.settings.interruptionErrorChance;
+    el.interruptionErrorChanceValue.textContent = state.settings.interruptionErrorChance + '%';
     applyInterruptionFieldVisibility();
+
+    el.variableLoudnessToggle.checked = state.settings.variableLoudness;
+    el.variableLoudnessMinSlider.value = state.settings.variableLoudnessMin;
+    el.variableLoudnessMinValue.textContent = state.settings.variableLoudnessMin + '%';
+    el.variableLoudnessMaxSlider.value = state.settings.variableLoudnessMax;
+    el.variableLoudnessMaxValue.textContent = state.settings.variableLoudnessMax + '%';
+    applyVariableLoudnessVisibility();
 
     el.weightSum.value = state.settings.stimulusWeights.sum;
     el.weightPlusminus.value = state.settings.stimulusWeights.plusminus;
@@ -3798,6 +3903,18 @@
       persistSettings();
     });
 
+    el.interruptionErrorChanceToggle.addEventListener('change', function () {
+      state.settings.interruptionErrorChanceEnabled = el.interruptionErrorChanceToggle.checked;
+      applyInterruptionFieldVisibility();
+      persistSettings();
+    });
+
+    el.interruptionErrorChanceSlider.addEventListener('input', function () {
+      state.settings.interruptionErrorChance = parseInt(el.interruptionErrorChanceSlider.value, 10);
+      el.interruptionErrorChanceValue.textContent = state.settings.interruptionErrorChance + '%';
+      persistSettings();
+    });
+
     el.keysToggle.addEventListener('click', function (e) {
       var btn = e.target.closest('.seg-btn');
       if (!btn) return;
@@ -3858,6 +3975,50 @@
     el.dichoticEasySwitchToggle.addEventListener('change', function () {
       state.settings.dichoticEasySwitch = el.dichoticEasySwitchToggle.checked;
       persistSettings();
+    });
+
+    el.variableLoudnessToggle.addEventListener('change', function () {
+      state.settings.variableLoudness = el.variableLoudnessToggle.checked;
+      applyVariableLoudnessVisibility();
+      persistSettings();
+    });
+
+    el.variableLoudnessMinSlider.addEventListener('input', function () {
+      state.settings.variableLoudnessMin = parseInt(el.variableLoudnessMinSlider.value, 10);
+      el.variableLoudnessMinValue.textContent = state.settings.variableLoudnessMin + '%';
+      // Keep the pair sane in the UI too, not just under the hood.
+      if (state.settings.variableLoudnessMin > state.settings.variableLoudnessMax) {
+        state.settings.variableLoudnessMax = state.settings.variableLoudnessMin;
+        el.variableLoudnessMaxSlider.value = state.settings.variableLoudnessMax;
+        el.variableLoudnessMaxValue.textContent = state.settings.variableLoudnessMax + '%';
+      }
+      persistSettings();
+    });
+
+    el.variableLoudnessMaxSlider.addEventListener('input', function () {
+      state.settings.variableLoudnessMax = parseInt(el.variableLoudnessMaxSlider.value, 10);
+      el.variableLoudnessMaxValue.textContent = state.settings.variableLoudnessMax + '%';
+      if (state.settings.variableLoudnessMin > state.settings.variableLoudnessMax) {
+        state.settings.variableLoudnessMin = state.settings.variableLoudnessMax;
+        el.variableLoudnessMinSlider.value = state.settings.variableLoudnessMin;
+        el.variableLoudnessMinValue.textContent = state.settings.variableLoudnessMin + '%';
+      }
+      persistSettings();
+    });
+
+    function testVariableLoudness(volumePercent) {
+      ensureAudioContext();
+      decodeAllDigitAudio().then(function () {
+        var buffers = state.settings.voice === 'female' ? digitBuffersB : digitBuffersA;
+        var digit = 1 + Math.floor(Math.random() * 9);
+        scheduleDigitBuffer(digit, audioCtx.currentTime + 0.05, null, 1, buffers, volumePercent / 100);
+      });
+    }
+    el.testVariableLoudnessMinBtn.addEventListener('click', function () {
+      testVariableLoudness(state.settings.variableLoudnessMin);
+    });
+    el.testVariableLoudnessMaxBtn.addEventListener('click', function () {
+      testVariableLoudness(state.settings.variableLoudnessMax);
     });
 
     el.dichoticCueVolume.addEventListener('input', function () {
@@ -4078,6 +4239,11 @@
     el.interruptionTimeCrunchSecondsField = q('interruption-time-crunch-seconds-field');
     el.interruptionTimeCrunchSecondsSlider = q('interruption-time-crunch-seconds-slider');
     el.interruptionTimeCrunchSecondsValue = q('interruption-time-crunch-seconds-value');
+    el.interruptionErrorChanceField = q('interruption-error-chance-field');
+    el.interruptionErrorChanceToggle = q('interruption-error-chance-toggle');
+    el.interruptionErrorChanceSliderField = q('interruption-error-chance-slider-field');
+    el.interruptionErrorChanceSlider = q('interruption-error-chance-slider');
+    el.interruptionErrorChanceValue = q('interruption-error-chance-value');
     el.interruptionInstructions = q('interruption-instructions');
     el.responseRulesDefault = q('response-rules-default');
     el.responseRulesCct = q('response-rules-cct');
@@ -4117,6 +4283,15 @@
     el.dichoticVisualColor = q('dichotic-visual-color');
     el.dichoticEasySwitchField = q('dichotic-easy-switch-field');
     el.dichoticEasySwitchToggle = q('dichotic-easy-switch-toggle');
+    el.variableLoudnessToggle = q('variable-loudness-toggle');
+    el.variableLoudnessMinField = q('variable-loudness-min-field');
+    el.variableLoudnessMinSlider = q('variable-loudness-min-slider');
+    el.variableLoudnessMinValue = q('variable-loudness-min-value');
+    el.testVariableLoudnessMinBtn = q('test-variable-loudness-min-btn');
+    el.variableLoudnessMaxField = q('variable-loudness-max-field');
+    el.variableLoudnessMaxSlider = q('variable-loudness-max-slider');
+    el.variableLoudnessMaxValue = q('variable-loudness-max-value');
+    el.testVariableLoudnessMaxBtn = q('test-variable-loudness-max-btn');
     el.mobileToggle = q('mobile-toggle');
     el.zenToggle = q('zen-toggle');
     el.ewmtToggle = q('ewmt-toggle');
