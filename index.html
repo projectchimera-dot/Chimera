@@ -372,7 +372,7 @@
   .stat-value { font-size: 1.15rem; font-weight: 600; }
   .top-bar-controls { margin-left: auto; display: flex; gap: 10px; }
 
-  .number-stage { flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .number-stage { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px; }
 
   .number-frame {
     position: relative;
@@ -975,6 +975,11 @@
         <input type="range" id="interruption-error-chance-slider" min="0" max="100" step="1">
       </div>
 
+      <div class="field field-toggle" id="interruption-move-number-field">
+        <label for="interruption-move-number-toggle">Relocate number box <span class="dim">(after each interruption resolves, moves it to a new spot until the next one)</span></label>
+        <label class="switch"><input type="checkbox" id="interruption-move-number-toggle"><span class="switch-track"></span></label>
+      </div>
+
       <details class="field field-dropdown" id="weights-dropdown">
         <summary class="field-dropdown-summary"><span class="field-dropdown-arrow" aria-hidden="true">▸</span>Number type probabilities</summary>
         <div class="field-dropdown-body">
@@ -1057,7 +1062,7 @@
       </div>
     </div>
 
-    <div class="number-stage">
+    <div class="number-stage" id="number-stage">
       <div class="number-frame" id="number-frame">
         <span class="corner tl"></span>
         <span class="corner tr"></span>
@@ -1542,7 +1547,14 @@
     // player gets a trial wrong, instead of always using
     // interruptionChance — see rollInterruption.
     interruptionErrorChanceEnabled: false,
-    interruptionErrorChance: 25 // percent, 0-100 — replaces interruptionChance for that one roll
+    interruptionErrorChance: 25, // percent, 0-100 — replaces interruptionChance for that one roll
+    // Optional: relocate #number-frame (the whole box - corners, eWMT
+    // background image, and the digit all move together, since eWMT's
+    // image and the corners are positioned relative to the frame itself,
+    // not the viewport) to a random spot within .number-stage each time
+    // an interruption resolves. See closeInterruption/
+    // randomizeNumberFramePosition.
+    interruptionMovesNumber: false
   };
 
   // ============================================================
@@ -1676,7 +1688,8 @@
       interruptionTimeCrunch: !!s.interruptionTimeCrunch,
       interruptionTimeCrunchSeconds: clamp(isNaN(timeCrunchSec) ? DEFAULT_SETTINGS.interruptionTimeCrunchSeconds : timeCrunchSec, 1, 5),
       interruptionErrorChanceEnabled: !!s.interruptionErrorChanceEnabled,
-      interruptionErrorChance: clamp(isNaN(interruptionErrorChance) ? DEFAULT_SETTINGS.interruptionErrorChance : interruptionErrorChance, 0, 100)
+      interruptionErrorChance: clamp(isNaN(interruptionErrorChance) ? DEFAULT_SETTINGS.interruptionErrorChance : interruptionErrorChance, 0, 100),
+      interruptionMovesNumber: !!s.interruptionMovesNumber
     };
   }
 
@@ -2578,6 +2591,36 @@
   // AND the true-streak pair (currentStreak/longestStreak — see
   // evaluateTrial) are all zeroed right here, which is what "breaks" it;
   // when it's off, none of the four are touched.
+  // Moves #number-frame to a random spot within .number-stage's own box
+  // (never the top-bar or key-hint/mobile-buttons — those are separate
+  // flex siblings entirely outside .number-stage, so this can't collide
+  // with them) and leaves it there until the next call. The eWMT
+  // background image and the decorative corners are positioned relative
+  // to the frame itself, not the viewport, so they travel with it with
+  // no extra work; the dichotic "visual help" half-screen cue is a
+  // separate fixed full-screen backdrop painted behind everything and
+  // is unaffected either way. Uses actual measured sizes rather than a
+  // fixed percentage clamp (unlike positionInterruptionCloseBtn) because
+  // the frame is much larger and more size-variable than that button.
+  function randomizeNumberFramePosition() {
+    var stageRect = el.numberStage.getBoundingClientRect();
+    var frameRect = el.numberFrame.getBoundingClientRect();
+    var maxLeft = Math.max(0, stageRect.width - frameRect.width);
+    var maxTop = Math.max(0, stageRect.height - frameRect.height);
+    el.numberFrame.style.position = 'absolute';
+    el.numberFrame.style.left = (Math.random() * maxLeft) + 'px';
+    el.numberFrame.style.top = (Math.random() * maxTop) + 'px';
+  }
+
+  // Back to its normal centered spot — see startSession, which always
+  // calls this so a fresh session never inherits a stale position from
+  // whatever the last one left it at, regardless of the current setting.
+  function resetNumberFramePosition() {
+    el.numberFrame.style.position = '';
+    el.numberFrame.style.left = '';
+    el.numberFrame.style.top = '';
+  }
+
   function closeInterruption() {
     clearInterval(interruptionBeepIntervalId);
     interruptionBeepIntervalId = null;
@@ -2597,6 +2640,7 @@
     if (audioCtx) { try { audioCtx.resume(); } catch (e) {} }
     state.nextTrialAudioTime = (audioCtx ? audioCtx.currentTime : 0) + 0.05;
     updateDichoticVisualCue(state.dichotic.targetEar); // restores the half-screen cue if dichotic visual help is on — see hideDichoticVisualCue above
+    if (state.settings.interruptionMovesNumber) randomizeNumberFramePosition();
     updateCountdownDisplay();
     countdownIntervalId = setInterval(updateCountdownDisplay, 250);
   }
@@ -2649,6 +2693,7 @@
     clearInterval(countdownIntervalId);
     stopAllPendingAudio();
     hideDichoticVisualCue();
+    resetNumberFramePosition();
     showScreen('menu');
   }
 
@@ -2970,6 +3015,7 @@
   function startSession() {
     ensureAudioContext();
     decodeAllDigitAudio(); // no-op if already decoded/decoding
+    resetNumberFramePosition(); // never inherit a stale spot from a previous session
 
     stopTicker();
     clearTimeout(showTimerId);
@@ -3545,6 +3591,7 @@
     el.interruptionTimeCrunchSecondsField.classList.toggle('hidden', !(state.settings.interruptionMode && state.settings.interruptionTimeCrunch));
     el.interruptionErrorChanceField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionErrorChanceSliderField.classList.toggle('hidden', !(state.settings.interruptionMode && state.settings.interruptionErrorChanceEnabled));
+    el.interruptionMoveNumberField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionInstructions.classList.toggle('hidden', !state.settings.interruptionMode);
   }
 
@@ -3703,6 +3750,7 @@
     el.interruptionErrorChanceToggle.checked = state.settings.interruptionErrorChanceEnabled;
     el.interruptionErrorChanceSlider.value = state.settings.interruptionErrorChance;
     el.interruptionErrorChanceValue.textContent = state.settings.interruptionErrorChance + '%';
+    el.interruptionMoveNumberToggle.checked = state.settings.interruptionMovesNumber;
     applyInterruptionFieldVisibility();
 
     el.variableLoudnessToggle.checked = state.settings.variableLoudness;
@@ -3912,6 +3960,11 @@
     el.interruptionErrorChanceSlider.addEventListener('input', function () {
       state.settings.interruptionErrorChance = parseInt(el.interruptionErrorChanceSlider.value, 10);
       el.interruptionErrorChanceValue.textContent = state.settings.interruptionErrorChance + '%';
+      persistSettings();
+    });
+
+    el.interruptionMoveNumberToggle.addEventListener('change', function () {
+      state.settings.interruptionMovesNumber = el.interruptionMoveNumberToggle.checked;
       persistSettings();
     });
 
@@ -4244,6 +4297,8 @@
     el.interruptionErrorChanceSliderField = q('interruption-error-chance-slider-field');
     el.interruptionErrorChanceSlider = q('interruption-error-chance-slider');
     el.interruptionErrorChanceValue = q('interruption-error-chance-value');
+    el.interruptionMoveNumberField = q('interruption-move-number-field');
+    el.interruptionMoveNumberToggle = q('interruption-move-number-toggle');
     el.interruptionInstructions = q('interruption-instructions');
     el.responseRulesDefault = q('response-rules-default');
     el.responseRulesCct = q('response-rules-cct');
@@ -4315,6 +4370,8 @@
     el.speedReadout = q('speed-readout');
     el.pauseBtn = q('pause-btn');
     el.endBtn = q('end-btn');
+    el.numberStage = q('number-stage');
+    el.numberFrame = q('number-frame');
     el.numberDisplay = q('number-display');
     el.numberBgImage = q('number-bg-image');
     el.dichoticVisualLeft = q('dichotic-visual-left');
