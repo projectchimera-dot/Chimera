@@ -536,6 +536,8 @@
     justify-content: center;
     font-size: 1.3rem;
     line-height: 1;
+    user-select: none;
+    -webkit-user-select: none;
   }
   /* Fixed top-center, clear of the close button's random position.
      Only shown while interruptionTimeCrunch is on for this interruption
@@ -549,6 +551,26 @@
     font-size: 2.5rem;
     font-weight: 700;
     color: var(--amber);
+  }
+  /* Shown instead of the countdown/× once the deadline passes with
+     interruptionTimeCrunchAllowResume on — see handleTimeCrunchExpired.
+     Centered, unlike the close button's last (now-irrelevant) random
+     spot. */
+  .interruption-time-crunch-failed {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+  .interruption-time-crunch-failed-msg {
+    font-family: var(--font-mono);
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--danger);
   }
 
   /* Zen mode: hides everything but the stimulus itself during play (top
@@ -965,6 +987,11 @@
         <input type="range" id="interruption-time-crunch-seconds-slider" min="1" max="5" step="1">
       </div>
 
+      <div class="field field-toggle" id="interruption-time-crunch-resume-field">
+        <label for="interruption-time-crunch-resume-toggle">Allow resuming after time crunch <span class="dim">(a "Resume session" button appears instead of an automatic reset to the menu)</span></label>
+        <label class="switch"><input type="checkbox" id="interruption-time-crunch-resume-toggle"><span class="switch-track"></span></label>
+      </div>
+
       <div class="field field-toggle" id="interruption-error-chance-field">
         <label for="interruption-error-chance-toggle">Different chance on error <span class="dim">(use a separate interruption frequency right after a wrong answer)</span></label>
         <label class="switch"><input type="checkbox" id="interruption-error-chance-toggle"><span class="switch-track"></span></label>
@@ -1019,6 +1046,28 @@
         <div class="volume-row">
           <input type="range" id="variable-loudness-max-slider" min="0" max="100" step="5">
           <button type="button" id="test-variable-loudness-max-btn" class="btn btn-ghost btn-sm">Test</button>
+        </div>
+      </div>
+
+      <div class="field field-toggle" id="mistake-penalty-field">
+        <label for="mistake-penalty-toggle">Time penalty on mistakes <span class="dim">(add time to the session after too many wrong answers in a row)</span></label>
+        <label class="switch"><input type="checkbox" id="mistake-penalty-toggle"><span class="switch-track"></span></label>
+      </div>
+
+      <div class="field" id="mistake-penalty-inputs-field">
+        <div class="bounds-group">
+          <div class="bound-row">
+            <span class="bound-label">Mistakes in a row</span>
+            <span class="bound-input-wrap">
+              <input type="number" id="mistake-penalty-count" min="1" max="20" step="1">
+            </span>
+          </div>
+          <div class="bound-row">
+            <span class="bound-label">Seconds added</span>
+            <span class="bound-input-wrap">
+              <input type="number" id="mistake-penalty-seconds" min="1" max="600" step="1"><span class="dim">sec</span>
+            </span>
+          </div>
         </div>
       </div>
 
@@ -1095,6 +1144,10 @@
     <div class="interruption-overlay hidden" id="interruption-overlay">
       <div class="interruption-time-crunch-countdown hidden" id="interruption-time-crunch-countdown"></div>
       <button type="button" id="interruption-close-btn" class="btn btn-primary interruption-close-btn" aria-label="Close">×</button>
+      <div class="interruption-time-crunch-failed hidden" id="interruption-time-crunch-failed">
+        <div class="interruption-time-crunch-failed-msg">Time's up!</div>
+        <button type="button" id="interruption-resume-btn" class="btn btn-primary">Resume session</button>
+      </div>
     </div>
   </section>
 
@@ -1118,6 +1171,7 @@
         <div class="stat-card hidden" id="slowest-speed-card"><div class="value mono" id="slowest-speed">–</div><div class="label">Slowest speed</div></div>
         <div class="stat-card"><div class="value mono" id="total-trials">–</div><div class="label">Total trials</div></div>
         <div class="stat-card" id="longest-streak-card"><div class="value mono" id="longest-streak">–</div><div class="label">Longest streak</div></div>
+        <div class="stat-card hidden" id="time-crunch-resumed-card"><div class="value mono" id="time-crunch-resumed">–</div><div class="label">Time-outs resumed</div></div>
       </div>
 
       <button id="back-to-menu-btn" class="btn btn-primary btn-block">Back to menu</button>
@@ -1459,6 +1513,14 @@
     variableLoudness: false,
     variableLoudnessMin: 60,
     variableLoudnessMax: 100,
+    // Optional: too many wrong answers in a row adds time to the
+    // session instead of anything about speed or streak. Tracked with
+    // its own independent counter (state.mistakePenaltyStreak) rather
+    // than reusing incorrectStreak, so it can't be reset early by
+    // adaptive mode's own unrelated 4-in-a-row logic — see evaluateTrial.
+    mistakePenaltyEnabled: false,
+    mistakePenaltyCount: 3, // mistakes in a row that trigger the penalty
+    mistakePenaltySeconds: 15, // seconds added to state.sessionEndAt each time
     mobileMode: false,
     dichoticMode: false,
     // Optional: on the trial where the target ear switches, play the
@@ -1543,6 +1605,11 @@
     interruptionBreaksStreak: true,
     interruptionTimeCrunch: false, // off by default — see handleTimeCrunchExpired
     interruptionTimeCrunchSeconds: 3, // 1-5, only used while interruptionTimeCrunch is on
+    // Optional: instead of handleTimeCrunchExpired hard-discarding the
+    // session, show a "Resume session" button on the black screen and
+    // let the player pick it back up exactly like a normal close. Off
+    // by default, preserving the original hard-fail behavior.
+    interruptionTimeCrunchAllowResume: false,
     // Optional: use a different frequency for the roll right after the
     // player gets a trial wrong, instead of always using
     // interruptionChance — see rollInterruption.
@@ -1645,6 +1712,8 @@
     var interruptionErrorChance = parseInt(s.interruptionErrorChance, 10);
     var loudnessMin = parseInt(s.variableLoudnessMin, 10);
     var loudnessMax = parseInt(s.variableLoudnessMax, 10);
+    var mistakePenaltyCount = parseInt(s.mistakePenaltyCount, 10);
+    var mistakePenaltySeconds = parseInt(s.mistakePenaltySeconds, 10);
     var floorMs = parseInt(s.adaptiveFloorMs, 10);
     var ceilingMs = parseInt(s.adaptiveCeilingMs, 10);
     var nBackLevel = parseInt(s.nBackLevel, 10);
@@ -1661,6 +1730,9 @@
       variableLoudness: !!s.variableLoudness,
       variableLoudnessMin: clamp(isNaN(loudnessMin) ? DEFAULT_SETTINGS.variableLoudnessMin : loudnessMin, 0, 100),
       variableLoudnessMax: clamp(isNaN(loudnessMax) ? DEFAULT_SETTINGS.variableLoudnessMax : loudnessMax, 0, 100),
+      mistakePenaltyEnabled: !!s.mistakePenaltyEnabled,
+      mistakePenaltyCount: clamp(isNaN(mistakePenaltyCount) ? DEFAULT_SETTINGS.mistakePenaltyCount : mistakePenaltyCount, 1, 20),
+      mistakePenaltySeconds: clamp(isNaN(mistakePenaltySeconds) ? DEFAULT_SETTINGS.mistakePenaltySeconds : mistakePenaltySeconds, 1, 600),
       mobileMode: !!s.mobileMode,
       dichoticMode: !!s.dichoticMode,
       dichoticEasySwitch: !!s.dichoticEasySwitch,
@@ -1687,6 +1759,7 @@
       interruptionBreaksStreak: s.interruptionBreaksStreak === undefined ? DEFAULT_SETTINGS.interruptionBreaksStreak : !!s.interruptionBreaksStreak,
       interruptionTimeCrunch: !!s.interruptionTimeCrunch,
       interruptionTimeCrunchSeconds: clamp(isNaN(timeCrunchSec) ? DEFAULT_SETTINGS.interruptionTimeCrunchSeconds : timeCrunchSec, 1, 5),
+      interruptionTimeCrunchAllowResume: !!s.interruptionTimeCrunchAllowResume,
       interruptionErrorChanceEnabled: !!s.interruptionErrorChanceEnabled,
       interruptionErrorChance: clamp(isNaN(interruptionErrorChance) ? DEFAULT_SETTINGS.interruptionErrorChance : interruptionErrorChance, 0, 100),
       interruptionMovesNumber: !!s.interruptionMovesNumber
@@ -1759,6 +1832,12 @@
     // session's average pace, for the history graph's "Average speed".
     isiSum: 0,
     isiSampleCount: 0,
+    // Independent of incorrectStreak on purpose — see mistakePenaltyEnabled's
+    // comment in DEFAULT_SETTINGS.
+    mistakePenaltyStreak: 0,
+    // How many times a time-crunch deadline has expired this session —
+    // see handleTimeCrunchExpired/interruptionTimeCrunchAllowResume.
+    timeCrunchFailures: 0,
     correctStreak: 0,
     incorrectStreak: 0,
     // The player-facing streak: consecutive correct answers, uninterrupted
@@ -2434,6 +2513,7 @@
     if (correct) {
       state.correctStreak++;
       state.incorrectStreak = 0;
+      state.mistakePenaltyStreak = 0;
       state.currentStreak++;
       if (state.currentStreak > state.longestStreak) state.longestStreak = state.currentStreak;
       if (state.settings.mode === 'adaptive' && state.correctStreak >= 4) {
@@ -2453,6 +2533,14 @@
         if (state.currentISI > state.slowestISI) state.slowestISI = state.currentISI;
         state.incorrectStreak = 0;
         updateSpeedIndicator();
+      }
+      // Independent streak (see DEFAULT_SETTINGS' comment) so adaptive
+      // mode resetting incorrectStreak above at its own threshold of 4
+      // can never suppress this one reaching a higher configured count.
+      state.mistakePenaltyStreak++;
+      if (state.settings.mistakePenaltyEnabled && state.mistakePenaltyStreak >= state.settings.mistakePenaltyCount) {
+        state.sessionEndAt += state.settings.mistakePenaltySeconds * 1000;
+        state.mistakePenaltyStreak = 0;
       }
     }
 
@@ -2549,6 +2637,8 @@
     hideDichoticVisualCue();
     positionInterruptionCloseBtn();
     el.interruptionOverlay.classList.remove('hidden');
+    el.interruptionCloseBtn.classList.remove('hidden'); // undo a previous time-crunch failure's UI swap, if any
+    el.interruptionTimeCrunchFailed.classList.add('hidden');
     el.interruptionCloseBtn.focus();
 
     // Time crunch: one deadline for the whole interruption, from right
@@ -2674,17 +2764,34 @@
     el.interruptionTimeCrunchCountdown.textContent = remainingSec.toFixed(1) + 's';
   }
 
-  // The deadline won — a hard fail, not a graceful end. Unlike
-  // endSession (which refuses to run mid-interruption and shows the
-  // report), this discards the session outright: no report, no history
-  // entry, straight back to the main menu.
+  // The deadline won. Unlike endSession (which refuses to run
+  // mid-interruption and shows the report), this never shows a report on
+  // its own — either it discards the session outright (default), or, if
+  // interruptionTimeCrunchAllowResume is on, it swaps in a "Resume
+  // session" button and waits right here instead of continuing past this
+  // point. Either way this session's failure count still goes up, so a
+  // later report can note it happened even though nothing else here
+  // treats it as a normal close — see resumeAfterTimeCrunchFailure and
+  // computeSessionStats' timeCrunchFailures.
   function handleTimeCrunchExpired() {
     clearInterval(interruptionBeepIntervalId);
     interruptionBeepIntervalId = null;
     clearInterval(interruptionTimeCrunchIntervalId);
     interruptionTimeCrunchIntervalId = null;
-    el.interruptionOverlay.classList.add('hidden');
     el.interruptionTimeCrunchCountdown.classList.add('hidden');
+    state.timeCrunchFailures++;
+
+    if (state.settings.interruptionTimeCrunchAllowResume) {
+      // Stay on the black screen — the alarm's already stopped above,
+      // but everything else (state.interrupted, the paused timer, the
+      // trial engine) stays exactly as triggerInterruption left it until
+      // resumeAfterTimeCrunchFailure's click handler picks it back up.
+      el.interruptionCloseBtn.classList.add('hidden');
+      el.interruptionTimeCrunchFailed.classList.remove('hidden');
+      return;
+    }
+
+    el.interruptionOverlay.classList.add('hidden');
     state.interrupted = false;
     stopTicker();
     clearTimeout(showTimerId);
@@ -2695,6 +2802,17 @@
     hideDichoticVisualCue();
     resetNumberFramePosition();
     showScreen('menu');
+  }
+
+  // The Resume session button's click handler — picks up exactly where
+  // closeInterruption always has (sessionEndAt nudged forward, streak
+  // handling, dichotic cue restore, number-frame reposition if that's
+  // on, the works), just reached via this button instead of a close-in-
+  // time click. See handleTimeCrunchExpired.
+  function resumeAfterTimeCrunchFailure() {
+    el.interruptionTimeCrunchFailed.classList.add('hidden');
+    el.interruptionCloseBtn.classList.remove('hidden');
+    closeInterruption();
   }
 
   // ============================================================
@@ -3037,6 +3155,8 @@
     state.slowestISI = state.currentISI;
     state.isiSum = 0;
     state.isiSampleCount = 0;
+    state.mistakePenaltyStreak = 0;
+    state.timeCrunchFailures = 0;
     state.correctStreak = 0;
     state.incorrectStreak = 0;
     state.currentStreak = 0;
@@ -3181,6 +3301,7 @@
       interruptionMode: state.settings.interruptionMode,
       interruptionChance: state.settings.interruptionChance,
       interruptionBreaksStreak: state.settings.interruptionBreaksStreak,
+      timeCrunchFailures: state.timeCrunchFailures,
       durationSec: state.settings.durationSec,
       finalSpeedMs: state.currentISI,
       fastestSpeedMs: state.fastestISI,
@@ -3243,6 +3364,13 @@
       el.fastestSpeed.textContent = stats.fastestSpeedMs + ' ms';
       el.slowestSpeed.textContent = stats.slowestSpeedMs + ' ms';
     }
+
+    // Only ever non-zero when interruptionTimeCrunchAllowResume let a
+    // time-crunch failure turn into a normal resume instead of aborting
+    // the session outright — see handleTimeCrunchExpired. Hidden for the
+    // (much more common) case where this never happened.
+    el.timeCrunchResumedCard.classList.toggle('hidden', !stats.timeCrunchFailures);
+    if (stats.timeCrunchFailures) el.timeCrunchResumed.textContent = stats.timeCrunchFailures;
 
     appendHistoryRecord(stats);
   }
@@ -3589,6 +3717,7 @@
     el.interruptionBreaksStreakField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionTimeCrunchField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionTimeCrunchSecondsField.classList.toggle('hidden', !(state.settings.interruptionMode && state.settings.interruptionTimeCrunch));
+    el.interruptionTimeCrunchResumeField.classList.toggle('hidden', !(state.settings.interruptionMode && state.settings.interruptionTimeCrunch));
     el.interruptionErrorChanceField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionErrorChanceSliderField.classList.toggle('hidden', !(state.settings.interruptionMode && state.settings.interruptionErrorChanceEnabled));
     el.interruptionMoveNumberField.classList.toggle('hidden', !state.settings.interruptionMode);
@@ -3600,6 +3729,12 @@
   function applyVariableLoudnessVisibility() {
     el.variableLoudnessMinField.classList.toggle('hidden', !state.settings.variableLoudness);
     el.variableLoudnessMaxField.classList.toggle('hidden', !state.settings.variableLoudness);
+  }
+
+  // The count/seconds inputs only mean anything once the penalty itself
+  // is on.
+  function applyMistakePenaltyVisibility() {
+    el.mistakePenaltyInputsField.classList.toggle('hidden', !state.settings.mistakePenaltyEnabled);
   }
 
   // Feedback and dichotic each have their own volume slider (see the
@@ -3747,6 +3882,7 @@
     el.interruptionTimeCrunchToggle.checked = state.settings.interruptionTimeCrunch;
     el.interruptionTimeCrunchSecondsSlider.value = state.settings.interruptionTimeCrunchSeconds;
     el.interruptionTimeCrunchSecondsValue.textContent = state.settings.interruptionTimeCrunchSeconds + 's';
+    el.interruptionTimeCrunchResumeToggle.checked = state.settings.interruptionTimeCrunchAllowResume;
     el.interruptionErrorChanceToggle.checked = state.settings.interruptionErrorChanceEnabled;
     el.interruptionErrorChanceSlider.value = state.settings.interruptionErrorChance;
     el.interruptionErrorChanceValue.textContent = state.settings.interruptionErrorChance + '%';
@@ -3759,6 +3895,11 @@
     el.variableLoudnessMaxSlider.value = state.settings.variableLoudnessMax;
     el.variableLoudnessMaxValue.textContent = state.settings.variableLoudnessMax + '%';
     applyVariableLoudnessVisibility();
+
+    el.mistakePenaltyToggle.checked = state.settings.mistakePenaltyEnabled;
+    el.mistakePenaltyCountInput.value = state.settings.mistakePenaltyCount;
+    el.mistakePenaltySecondsInput.value = state.settings.mistakePenaltySeconds;
+    applyMistakePenaltyVisibility();
 
     el.weightSum.value = state.settings.stimulusWeights.sum;
     el.weightPlusminus.value = state.settings.stimulusWeights.plusminus;
@@ -3951,6 +4092,13 @@
       persistSettings();
     });
 
+    el.interruptionTimeCrunchResumeToggle.addEventListener('change', function () {
+      state.settings.interruptionTimeCrunchAllowResume = el.interruptionTimeCrunchResumeToggle.checked;
+      persistSettings();
+    });
+
+    el.interruptionResumeBtn.addEventListener('click', resumeAfterTimeCrunchFailure);
+
     el.interruptionErrorChanceToggle.addEventListener('change', function () {
       state.settings.interruptionErrorChanceEnabled = el.interruptionErrorChanceToggle.checked;
       applyInterruptionFieldVisibility();
@@ -4072,6 +4220,26 @@
     });
     el.testVariableLoudnessMaxBtn.addEventListener('click', function () {
       testVariableLoudness(state.settings.variableLoudnessMax);
+    });
+
+    el.mistakePenaltyToggle.addEventListener('change', function () {
+      state.settings.mistakePenaltyEnabled = el.mistakePenaltyToggle.checked;
+      applyMistakePenaltyVisibility();
+      persistSettings();
+    });
+
+    el.mistakePenaltyCountInput.addEventListener('input', function () {
+      var v = parseInt(el.mistakePenaltyCountInput.value, 10);
+      if (isNaN(v)) return;
+      state.settings.mistakePenaltyCount = clamp(v, 1, 20);
+      persistSettings();
+    });
+
+    el.mistakePenaltySecondsInput.addEventListener('input', function () {
+      var v = parseInt(el.mistakePenaltySecondsInput.value, 10);
+      if (isNaN(v)) return;
+      state.settings.mistakePenaltySeconds = clamp(v, 1, 600);
+      persistSettings();
     });
 
     el.dichoticCueVolume.addEventListener('input', function () {
@@ -4292,6 +4460,8 @@
     el.interruptionTimeCrunchSecondsField = q('interruption-time-crunch-seconds-field');
     el.interruptionTimeCrunchSecondsSlider = q('interruption-time-crunch-seconds-slider');
     el.interruptionTimeCrunchSecondsValue = q('interruption-time-crunch-seconds-value');
+    el.interruptionTimeCrunchResumeField = q('interruption-time-crunch-resume-field');
+    el.interruptionTimeCrunchResumeToggle = q('interruption-time-crunch-resume-toggle');
     el.interruptionErrorChanceField = q('interruption-error-chance-field');
     el.interruptionErrorChanceToggle = q('interruption-error-chance-toggle');
     el.interruptionErrorChanceSliderField = q('interruption-error-chance-slider-field');
@@ -4347,6 +4517,11 @@
     el.variableLoudnessMaxSlider = q('variable-loudness-max-slider');
     el.variableLoudnessMaxValue = q('variable-loudness-max-value');
     el.testVariableLoudnessMaxBtn = q('test-variable-loudness-max-btn');
+    el.mistakePenaltyField = q('mistake-penalty-field');
+    el.mistakePenaltyToggle = q('mistake-penalty-toggle');
+    el.mistakePenaltyInputsField = q('mistake-penalty-inputs-field');
+    el.mistakePenaltyCountInput = q('mistake-penalty-count');
+    el.mistakePenaltySecondsInput = q('mistake-penalty-seconds');
     el.mobileToggle = q('mobile-toggle');
     el.zenToggle = q('zen-toggle');
     el.ewmtToggle = q('ewmt-toggle');
@@ -4389,6 +4564,8 @@
     el.interruptionOverlay = q('interruption-overlay');
     el.interruptionCloseBtn = q('interruption-close-btn');
     el.interruptionTimeCrunchCountdown = q('interruption-time-crunch-countdown');
+    el.interruptionTimeCrunchFailed = q('interruption-time-crunch-failed');
+    el.interruptionResumeBtn = q('interruption-resume-btn');
 
     el.overallAccuracyValue = q('overall-accuracy-value');
     el.sumAccuracy = q('sum-accuracy');
@@ -4405,6 +4582,8 @@
     el.totalTrials = q('total-trials');
     el.longestStreakCard = q('longest-streak-card');
     el.longestStreak = q('longest-streak');
+    el.timeCrunchResumedCard = q('time-crunch-resumed-card');
+    el.timeCrunchResumed = q('time-crunch-resumed');
     el.backToMenuBtn = q('back-to-menu-btn');
 
     el.historyList = q('history-list');
