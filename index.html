@@ -844,6 +844,17 @@
         </div>
       </div>
 
+      <div class="field" id="feedback-beep-style-field">
+        <label>Feedback beep sound</label>
+        <select id="feedback-beep-style">
+          <option value="beep">Beep</option>
+          <option value="fart">Fart</option>
+          <option value="boing">Boing</option>
+          <option value="honk">Honk</option>
+          <option value="laser">Laser</option>
+        </select>
+      </div>
+
       <div class="field" id="voice-select-field">
         <label>Voice <span class="dim">(non-dichotic mode)</span></label>
         <div class="segmented" data-group="voice-select">
@@ -949,6 +960,17 @@
         </div>
       </div>
 
+      <div class="field" id="cct-beep-style-field">
+        <label>CCT beep sound</label>
+        <select id="cct-beep-style">
+          <option value="beep">Beep</option>
+          <option value="fart">Fart</option>
+          <option value="boing">Boing</option>
+          <option value="honk">Honk</option>
+          <option value="laser">Laser</option>
+        </select>
+      </div>
+
       <div class="field field-toggle">
         <label for="interruption-toggle">Interruption mode <span class="dim">(random black-screen interruptions)</span></label>
         <label class="switch"><input type="checkbox" id="interruption-toggle"><span class="switch-track"></span></label>
@@ -970,6 +992,17 @@
           <input type="range" id="interruption-beep-volume" min="0" max="100" step="5">
           <button type="button" id="test-interruption-beep-btn" class="btn btn-ghost btn-sm">Test</button>
         </div>
+      </div>
+
+      <div class="field" id="interruption-beep-style-field">
+        <label>Interruption beep sound</label>
+        <select id="interruption-beep-style">
+          <option value="beep">Beep</option>
+          <option value="fart">Fart</option>
+          <option value="boing">Boing</option>
+          <option value="honk">Honk</option>
+          <option value="laser">Laser</option>
+        </select>
       </div>
 
       <div class="field field-toggle" id="interruption-breaks-streak-field">
@@ -1496,12 +1529,14 @@
     swapKeys: false,
     instantFeedback: true,
     feedbackBeepVolume: 50,
+    feedbackBeepStyle: 'beep', // 'beep' | 'fart' | 'boing' | 'honk' | 'laser' — see BEEP_STYLES
     dichoticCueVolume: 50,
     // CCT mode's own volume for the same wrong-answer beep — see
     // evaluateTrial/applyFeedbackBeepVolumeVisibility. Split out because
     // CCT scores every trial, so this beep can fire far more often there
     // than feedbackBeepVolume's beep does in normal mode.
     cctBeepVolume: 50,
+    cctBeepStyle: 'beep',
     voice: 'male',       // which pre-recorded voice speaks in non-dichotic mode ('male' | 'female'); dichotic mode always uses both
     // Variable sound loudness (optional, off by default): each trial's
     // digit volume is redrawn uniformly at random between
@@ -1601,6 +1636,7 @@
     interruptionMode: false,
     interruptionChance: 10, // percent chance per trial, 1-100 — see rollInterruption
     interruptionBeepVolume: 50,
+    interruptionBeepStyle: 'beep',
     interruptionTeleportChance: 0, // percent chance per click that it relocates instead of closing, 0-100
     interruptionBreaksStreak: true,
     interruptionTimeCrunch: false, // off by default — see handleTimeCrunchExpired
@@ -1686,6 +1722,7 @@
 
   function sanitizeSettings(s) {
     s = s || {};
+    var validBeepStyles = { beep: 1, fart: 1, boing: 1, honk: 1, laser: 1 }; // keep in sync with BEEP_STYLES
     var speed = parseInt(s.startingSpeedMs, 10);
     var dur = parseInt(s.durationSec, 10);
     var legacyVol = parseInt(s.beepVolume, 10); // pre-split single "beep volume" setting — fallback below only, so upgrading an old save doesn't silently reset either new slider
@@ -1724,8 +1761,10 @@
       swapKeys: !!s.swapKeys,
       instantFeedback: s.instantFeedback === undefined ? DEFAULT_SETTINGS.instantFeedback : !!s.instantFeedback,
       feedbackBeepVolume: clamp(isNaN(feedbackVol) ? DEFAULT_SETTINGS.feedbackBeepVolume : feedbackVol, 0, 100),
+      feedbackBeepStyle: validBeepStyles[s.feedbackBeepStyle] ? s.feedbackBeepStyle : DEFAULT_SETTINGS.feedbackBeepStyle,
       dichoticCueVolume: clamp(isNaN(dichoticVol) ? DEFAULT_SETTINGS.dichoticCueVolume : dichoticVol, 0, 100),
       cctBeepVolume: clamp(isNaN(cctVol) ? DEFAULT_SETTINGS.cctBeepVolume : cctVol, 0, 100),
+      cctBeepStyle: validBeepStyles[s.cctBeepStyle] ? s.cctBeepStyle : DEFAULT_SETTINGS.cctBeepStyle,
       voice: s.voice === 'female' ? 'female' : 'male',
       variableLoudness: !!s.variableLoudness,
       variableLoudnessMin: clamp(isNaN(loudnessMin) ? DEFAULT_SETTINGS.variableLoudnessMin : loudnessMin, 0, 100),
@@ -1755,6 +1794,7 @@
       interruptionMode: !!s.interruptionMode,
       interruptionChance: clamp(interruptionChance, 1, 100),
       interruptionBeepVolume: clamp(isNaN(interruptionBeepVol) ? DEFAULT_SETTINGS.interruptionBeepVolume : interruptionBeepVol, 0, 100),
+      interruptionBeepStyle: validBeepStyles[s.interruptionBeepStyle] ? s.interruptionBeepStyle : DEFAULT_SETTINGS.interruptionBeepStyle,
       interruptionTeleportChance: clamp(isNaN(interruptionTeleportChance) ? DEFAULT_SETTINGS.interruptionTeleportChance : interruptionTeleportChance, 0, 100),
       interruptionBreaksStreak: s.interruptionBreaksStreak === undefined ? DEFAULT_SETTINGS.interruptionBreaksStreak : !!s.interruptionBreaksStreak,
       interruptionTimeCrunch: !!s.interruptionTimeCrunch,
@@ -2203,23 +2243,25 @@
     }
   }
 
-  function playBeep(volumeFraction) {
-    try {
-      ensureAudioContext();
-      if (!audioCtx) return;
+  // Sound styles for the app's three evaluative/alarm tones (feedback,
+  // CCT, interruption — see feedbackBeepStyle/cctBeepStyle/
+  // interruptionBeepStyle). Each of those three settings picks
+  // independently from this same set, same as they already each get
+  // their own independent volume. Every synthesizer takes (vol 0-1, now)
+  // and is responsible for its own oscillator/gain lifecycle — short
+  // linear fades in/out (an instant on/off is an audible click/pop, see
+  // the original 'beep'), disconnect on end — exactly like 'beep'
+  // always has.
+  var BEEP_STYLES = {
+    beep: function (vol, now) {
       var osc = audioCtx.createOscillator();
       var gain = audioCtx.createGain();
       // Triangle rather than square: far fewer/softer upper harmonics, so
-      // the feedback tone reads as a clean "note" instead of a buzzy
-      // alarm - matters here since this can fire often during a session.
+      // this reads as a clean "note" instead of a buzzy alarm - matters
+      // since it can fire often during a session.
       osc.type = 'triangle';
-      var now = audioCtx.currentTime;
       osc.frequency.setValueAtTime(820, now);
-      var vol = clamp(volumeFraction, 0, 1);
       var dur = 0.18, attack = 0.008, release = 0.03;
-      // A short linear fade in/out instead of an instant on/off - without
-      // it the waveform gets cut off mid-cycle, which is an audible
-      // click/pop at both ends of every single beep.
       gain.gain.setValueAtTime(0, now);
       gain.gain.linearRampToValueAtTime(vol, now + attack);
       gain.gain.setValueAtTime(vol, now + dur - release);
@@ -2232,6 +2274,134 @@
         try { osc.disconnect(); } catch (e) {}
         try { gain.disconnect(); } catch (e) {}
       };
+    },
+    fart: function (vol, now) {
+      // Sawtooth for the buzzy timbre, with a wobbling, generally-
+      // descending frequency path (a few irregular ups and downs, not a
+      // clean slide) so it reads as "sputtering" rather than a siren.
+      // Re-rolled every call, so it doesn't sound identical every time.
+      var osc = audioCtx.createOscillator();
+      var gain = audioCtx.createGain();
+      osc.type = 'sawtooth';
+      var dur = 0.5;
+      var f = 140 + Math.random() * 40;
+      osc.frequency.setValueAtTime(f, now);
+      var steps = 5;
+      for (var i = 1; i <= steps; i++) {
+        f = Math.max(45, f + (Math.random() - 0.6) * 30 - 15);
+        osc.frequency.linearRampToValueAtTime(f, now + (dur * i / steps));
+      }
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(vol, now + 0.02);
+      gain.gain.setValueAtTime(vol * 0.9, now + dur * 0.6);
+      gain.gain.linearRampToValueAtTime(0, now + dur);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(now);
+      osc.stop(now + dur);
+      osc.onended = function () {
+        try { osc.disconnect(); } catch (e) {}
+        try { gain.disconnect(); } catch (e) {}
+      };
+    },
+    boing: function (vol, now) {
+      // A sine whose frequency does a few decaying up/down swings around
+      // a center point - a spring settling, cartoon-"boing" style.
+      var osc = audioCtx.createOscillator();
+      var gain = audioCtx.createGain();
+      osc.type = 'sine';
+      var dur = 0.4;
+      var base = 300, amp = 220;
+      osc.frequency.setValueAtTime(base, now);
+      var t = now;
+      var swings = 4;
+      for (var i = 0; i < swings; i++) {
+        amp *= 0.55;
+        t += dur / (swings * 2);
+        osc.frequency.linearRampToValueAtTime(base + amp, t);
+        t += dur / (swings * 2);
+        osc.frequency.linearRampToValueAtTime(base - amp * 0.4, t);
+      }
+      osc.frequency.linearRampToValueAtTime(base, now + dur);
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(vol, now + 0.01);
+      gain.gain.setValueAtTime(vol, now + dur - 0.08);
+      gain.gain.linearRampToValueAtTime(0, now + dur);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(now);
+      osc.stop(now + dur);
+      osc.onended = function () {
+        try { osc.disconnect(); } catch (e) {}
+        try { gain.disconnect(); } catch (e) {}
+      };
+    },
+    honk: function (vol, now) {
+      // A clown-horn/car-honk: sawtooth at a fixed low-mid pitch with a
+      // fast, shallow vibrato (frequency modulated by a second, silent
+      // oscillator) for a bit of buzz, and a punchy short envelope.
+      var osc = audioCtx.createOscillator();
+      var vibrato = audioCtx.createOscillator();
+      var vibratoGain = audioCtx.createGain();
+      var gain = audioCtx.createGain();
+      osc.type = 'sawtooth';
+      var dur = 0.3;
+      osc.frequency.setValueAtTime(260, now);
+      vibrato.frequency.setValueAtTime(18, now);
+      vibratoGain.gain.setValueAtTime(12, now);
+      vibrato.connect(vibratoGain);
+      vibratoGain.connect(osc.frequency);
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(vol, now + 0.015);
+      gain.gain.setValueAtTime(vol, now + dur - 0.06);
+      gain.gain.linearRampToValueAtTime(0, now + dur);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(now);
+      vibrato.start(now);
+      osc.stop(now + dur);
+      vibrato.stop(now + dur);
+      osc.onended = function () {
+        try { osc.disconnect(); } catch (e) {}
+        try { vibrato.disconnect(); } catch (e) {}
+        try { vibratoGain.disconnect(); } catch (e) {}
+        try { gain.disconnect(); } catch (e) {}
+      };
+    },
+    laser: function (vol, now) {
+      // Sci-fi zap: a fast high-to-low frequency sweep. Exponential
+      // rather than linear for the frequency (unlike every gain envelope
+      // in this file, which stays linear) - pitch perception is roughly
+      // logarithmic, so an exponential sweep is what reads as a smooth
+      // "zap" instead of a jump; safe here since 1400->120 never crosses
+      // zero, which is the usual hazard with exponential ramps.
+      var osc = audioCtx.createOscillator();
+      var gain = audioCtx.createGain();
+      osc.type = 'square';
+      var dur = 0.18;
+      osc.frequency.setValueAtTime(1400, now);
+      osc.frequency.exponentialRampToValueAtTime(120, now + dur);
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(vol, now + 0.005);
+      gain.gain.linearRampToValueAtTime(0, now + dur);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(now);
+      osc.stop(now + dur);
+      osc.onended = function () {
+        try { osc.disconnect(); } catch (e) {}
+        try { gain.disconnect(); } catch (e) {}
+      };
+    }
+  };
+
+  function playBeep(volumeFraction, style) {
+    try {
+      ensureAudioContext();
+      if (!audioCtx) return;
+      var vol = clamp(volumeFraction, 0, 1);
+      var synth = BEEP_STYLES[style] || BEEP_STYLES.beep;
+      synth(vol, audioCtx.currentTime);
     } catch (e) { /* ignore */ }
   }
 
@@ -2552,7 +2722,8 @@
     if (state.settings.instantFeedback) {
       if (!correct) {
         var beepVol = state.settings.cctMode ? state.settings.cctBeepVolume : state.settings.feedbackBeepVolume;
-        playBeep(beepVol / 100);
+        var beepStyle = state.settings.cctMode ? state.settings.cctBeepStyle : state.settings.feedbackBeepStyle;
+        playBeep(beepVol / 100, beepStyle);
       }
     }
   }
@@ -2656,15 +2827,16 @@
       el.interruptionTimeCrunchCountdown.classList.add('hidden');
     }
 
-    // Alarm beep — the same tone as the wrong-answer feedback beep (see
-    // playBeep/evaluateTrial), just at its own interruptionBeepVolume
-    // rather than feedbackBeepVolume, repeating for as long as the black
-    // screen stays up rather than firing once. Stopped only in
+    // Alarm beep — the same tone as the wrong-answer feedback beep by
+    // default (see playBeep/evaluateTrial), just at its own
+    // interruptionBeepVolume/interruptionBeepStyle rather than
+    // feedbackBeepVolume/feedbackBeepStyle, repeating for as long as the
+    // black screen stays up rather than firing once. Stopped only in
     // closeInterruption.
-    playBeep(state.settings.interruptionBeepVolume / 100);
+    playBeep(state.settings.interruptionBeepVolume / 100, state.settings.interruptionBeepStyle);
     clearInterval(interruptionBeepIntervalId);
     interruptionBeepIntervalId = setInterval(function () {
-      playBeep(state.settings.interruptionBeepVolume / 100);
+      playBeep(state.settings.interruptionBeepVolume / 100, state.settings.interruptionBeepStyle);
     }, INTERRUPTION_BEEP_INTERVAL_MS);
   }
 
@@ -3714,6 +3886,7 @@
     el.interruptionChanceField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionTeleportChanceField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionBeepVolumeField.classList.toggle('hidden', !state.settings.interruptionMode);
+    el.interruptionBeepStyleField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionBreaksStreakField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionTimeCrunchField.classList.toggle('hidden', !state.settings.interruptionMode);
     el.interruptionTimeCrunchSecondsField.classList.toggle('hidden', !(state.settings.interruptionMode && state.settings.interruptionTimeCrunch));
@@ -3745,7 +3918,9 @@
   // and only once instantFeedback itself is on.
   function applyFeedbackBeepVolumeVisibility() {
     el.feedbackBeepVolumeField.classList.toggle('hidden', !state.settings.instantFeedback || state.settings.cctMode);
+    el.feedbackBeepStyleField.classList.toggle('hidden', !state.settings.instantFeedback || state.settings.cctMode);
     el.cctBeepVolumeField.classList.toggle('hidden', !state.settings.instantFeedback || !state.settings.cctMode);
+    el.cctBeepStyleField.classList.toggle('hidden', !state.settings.instantFeedback || !state.settings.cctMode);
   }
 
   // Dichotic mode's switch cue tone is functionally required, not
@@ -3869,6 +4044,7 @@
     el.cctToggle.checked = state.settings.cctMode;
     el.cctBeepVolume.value = state.settings.cctBeepVolume;
     el.cctBeepValue.textContent = state.settings.cctBeepVolume + '%';
+    el.cctBeepStyle.value = state.settings.cctBeepStyle;
     applyCctModeVisibility();
 
     el.interruptionToggle.checked = state.settings.interruptionMode;
@@ -3878,6 +4054,7 @@
     el.interruptionTeleportChanceValue.textContent = state.settings.interruptionTeleportChance + '%';
     el.interruptionBeepVolume.value = state.settings.interruptionBeepVolume;
     el.interruptionBeepValue.textContent = state.settings.interruptionBeepVolume + '%';
+    el.interruptionBeepStyle.value = state.settings.interruptionBeepStyle;
     el.interruptionBreaksStreakToggle.checked = state.settings.interruptionBreaksStreak;
     el.interruptionTimeCrunchToggle.checked = state.settings.interruptionTimeCrunch;
     el.interruptionTimeCrunchSecondsSlider.value = state.settings.interruptionTimeCrunchSeconds;
@@ -3914,6 +4091,7 @@
     el.feedbackToggle.checked = state.settings.instantFeedback;
     el.feedbackBeepVolume.value = state.settings.feedbackBeepVolume;
     el.feedbackBeepValue.textContent = state.settings.feedbackBeepVolume + '%';
+    el.feedbackBeepStyle.value = state.settings.feedbackBeepStyle;
     setSegmented(el.voiceSelectToggle, state.settings.voice);
     el.dichoticToggle.checked = state.settings.dichoticMode;
     el.dichoticCueVolume.value = state.settings.dichoticCueVolume;
@@ -4041,9 +4219,14 @@
       persistSettings();
     });
 
+    el.cctBeepStyle.addEventListener('change', function () {
+      state.settings.cctBeepStyle = el.cctBeepStyle.value;
+      persistSettings();
+    });
+
     el.testCctBeepBtn.addEventListener('click', function () {
       ensureAudioContext();
-      playBeep(state.settings.cctBeepVolume / 100);
+      playBeep(state.settings.cctBeepVolume / 100, state.settings.cctBeepStyle);
     });
 
     el.interruptionToggle.addEventListener('change', function () {
@@ -4070,9 +4253,14 @@
       persistSettings();
     });
 
+    el.interruptionBeepStyle.addEventListener('change', function () {
+      state.settings.interruptionBeepStyle = el.interruptionBeepStyle.value;
+      persistSettings();
+    });
+
     el.testInterruptionBeepBtn.addEventListener('click', function () {
       ensureAudioContext();
-      playBeep(state.settings.interruptionBeepVolume / 100);
+      playBeep(state.settings.interruptionBeepVolume / 100, state.settings.interruptionBeepStyle);
     });
 
     el.interruptionBreaksStreakToggle.addEventListener('change', function () {
@@ -4150,9 +4338,14 @@
       persistSettings();
     });
 
+    el.feedbackBeepStyle.addEventListener('change', function () {
+      state.settings.feedbackBeepStyle = el.feedbackBeepStyle.value;
+      persistSettings();
+    });
+
     el.testFeedbackBeepBtn.addEventListener('click', function () {
       ensureAudioContext();
-      playBeep(state.settings.feedbackBeepVolume / 100);
+      playBeep(state.settings.feedbackBeepVolume / 100, state.settings.feedbackBeepStyle);
     });
 
     el.voiceSelectToggle.addEventListener('click', function (e) {
@@ -4442,6 +4635,8 @@
     el.cctBeepVolume = q('cct-beep-volume');
     el.cctBeepValue = q('cct-beep-value');
     el.testCctBeepBtn = q('test-cct-beep-btn');
+    el.cctBeepStyleField = q('cct-beep-style-field');
+    el.cctBeepStyle = q('cct-beep-style');
     el.interruptionToggle = q('interruption-toggle');
     el.interruptionChanceField = q('interruption-chance-field');
     el.interruptionChanceSlider = q('interruption-chance-slider');
@@ -4453,6 +4648,8 @@
     el.interruptionBeepVolume = q('interruption-beep-volume');
     el.interruptionBeepValue = q('interruption-beep-value');
     el.testInterruptionBeepBtn = q('test-interruption-beep-btn');
+    el.interruptionBeepStyleField = q('interruption-beep-style-field');
+    el.interruptionBeepStyle = q('interruption-beep-style');
     el.interruptionBreaksStreakField = q('interruption-breaks-streak-field');
     el.interruptionBreaksStreakToggle = q('interruption-breaks-streak-toggle');
     el.interruptionTimeCrunchField = q('interruption-time-crunch-field');
@@ -4494,6 +4691,8 @@
     el.feedbackBeepVolume = q('feedback-beep-volume');
     el.feedbackBeepValue = q('feedback-beep-value');
     el.testFeedbackBeepBtn = q('test-feedback-beep-btn');
+    el.feedbackBeepStyleField = q('feedback-beep-style-field');
+    el.feedbackBeepStyle = q('feedback-beep-style');
     el.voiceSelectField = q('voice-select-field');
     el.voiceSelectToggle = document.querySelector('[data-group="voice-select"]');
     el.dichoticToggle = q('dichotic-toggle');
