@@ -852,6 +852,7 @@
           <option value="boing">Boing</option>
           <option value="honk">Honk</option>
           <option value="laser">Laser</option>
+          <option value="random">Random</option>
         </select>
       </div>
 
@@ -968,6 +969,7 @@
           <option value="boing">Boing</option>
           <option value="honk">Honk</option>
           <option value="laser">Laser</option>
+          <option value="random">Random</option>
         </select>
       </div>
 
@@ -1002,6 +1004,7 @@
           <option value="boing">Boing</option>
           <option value="honk">Honk</option>
           <option value="laser">Laser</option>
+          <option value="random">Random</option>
         </select>
       </div>
 
@@ -1529,7 +1532,7 @@
     swapKeys: false,
     instantFeedback: true,
     feedbackBeepVolume: 50,
-    feedbackBeepStyle: 'beep', // 'beep' | 'fart' | 'boing' | 'honk' | 'laser' — see BEEP_STYLES
+    feedbackBeepStyle: 'beep', // 'beep' | 'fart' | 'boing' | 'honk' | 'laser' | 'random' — see BEEP_STYLES/playBeep
     dichoticCueVolume: 50,
     // CCT mode's own volume for the same wrong-answer beep — see
     // evaluateTrial/applyFeedbackBeepVolumeVisibility. Split out because
@@ -1722,7 +1725,7 @@
 
   function sanitizeSettings(s) {
     s = s || {};
-    var validBeepStyles = { beep: 1, fart: 1, boing: 1, honk: 1, laser: 1 }; // keep in sync with BEEP_STYLES
+    var validBeepStyles = { beep: 1, fart: 1, boing: 1, honk: 1, laser: 1, random: 1 }; // keep in sync with BEEP_STYLES, plus the special 'random' sentinel handled in playBeep
     var speed = parseInt(s.startingSpeedMs, 10);
     var dur = parseInt(s.durationSec, 10);
     var legacyVol = parseInt(s.beepVolume, 10); // pre-split single "beep volume" setting — fallback below only, so upgrading an old save doesn't silently reset either new slider
@@ -2400,7 +2403,17 @@
       ensureAudioContext();
       if (!audioCtx) return;
       var vol = clamp(volumeFraction, 0, 1);
-      var synth = BEEP_STYLES[style] || BEEP_STYLES.beep;
+      var pickedStyle = style;
+      if (style === 'random') {
+        // Re-rolled on every call, not once when the setting is chosen -
+        // the point of "Random" is a different sound each time this
+        // beep fires, not just an unpredictable-but-fixed one. Drawn
+        // from BEEP_STYLES' own keys, so a future style added there is
+        // automatically in the running here too, with nothing to update.
+        var keys = Object.keys(BEEP_STYLES);
+        pickedStyle = keys[Math.floor(Math.random() * keys.length)];
+      }
+      var synth = BEEP_STYLES[pickedStyle] || BEEP_STYLES.beep;
       synth(vol, audioCtx.currentTime);
     } catch (e) { /* ignore */ }
   }
