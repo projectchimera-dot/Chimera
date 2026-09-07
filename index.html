@@ -475,6 +475,7 @@
   .key-hint {
     display: flex;
     justify-content: space-between;
+    align-items: center;
     max-width: 420px;
     margin: 0 auto;
     width: 100%;
@@ -482,6 +483,61 @@
     font-size: 0.85rem;
     font-weight: 600;
     color: var(--text-muted);
+  }
+  .key-hint-item { display: flex; align-items: center; gap: 8px; }
+  /* A raised-looking rectangle (thicker bottom border) that flattens and
+     shifts down on .pressed — mimics a physical key being pushed, driven
+     live by the keydown/keyup listeners (see setKeyHintPressed). The
+     0.05s transition is fast enough to read as immediate, not laggy. */
+  .key-cap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 34px;
+    height: 30px;
+    padding: 0 8px;
+    background: var(--panel-recessed);
+    border: 1px solid var(--border);
+    border-bottom-width: 3px;
+    border-radius: 7px;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--text);
+    transition: background 0.05s, border-color 0.05s, transform 0.05s, border-bottom-width 0.05s;
+  }
+  .key-cap.pressed {
+    background: var(--amber);
+    border-color: var(--amber);
+    color: #1a1206;
+    border-bottom-width: 1px;
+    transform: translateY(2px);
+  }
+
+  .key-rebind-row { display: flex; gap: 10px; }
+  .key-rebind-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--panel-recessed);
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .key-rebind-btn:hover { border-color: var(--border); }
+  /* Pulses while waiting for the next keypress — see startRebind. */
+  .key-rebind-btn.listening { border-color: var(--amber); animation: key-rebind-pulse 1s ease-in-out infinite; }
+  @keyframes key-rebind-pulse {
+    0%, 100% { border-color: var(--amber); }
+    50% { border-color: var(--border-soft); }
   }
 
   .mobile-buttons { display: flex; gap: 12px; padding: 0 20px 22px; }
@@ -815,10 +871,17 @@
 
       <div class="field">
         <label>Response keys</label>
-        <div class="segmented" data-group="keys">
-          <button type="button" class="seg-btn" data-value="false">Left = Match</button>
-          <button type="button" class="seg-btn" data-value="true">Right = Match</button>
+        <div class="key-rebind-row">
+          <button type="button" class="key-rebind-btn" id="match-key-btn">
+            <span class="key-rebind-label">Match</span>
+            <span class="key-cap" id="match-key-cap">←</span>
+          </button>
+          <button type="button" class="key-rebind-btn" id="nomatch-key-btn">
+            <span class="key-rebind-label">No match</span>
+            <span class="key-cap" id="nomatch-key-cap">→</span>
+          </button>
         </div>
+        <div class="dim" style="margin-top: 6px;">Click a button, then press any key to bind it. Escape and Space are reserved.</div>
       </div>
 
       <div class="field field-toggle">
@@ -1159,9 +1222,18 @@
     </div>
 
     <div class="key-hint">
-      <span id="hint-left">← Match</span>
-      <span id="hint-skip" class="hidden">Space skip</span>
-      <span id="hint-right">No match →</span>
+      <div class="key-hint-item">
+        <span class="key-cap" id="hint-left-key">←</span>
+        <span>Match</span>
+      </div>
+      <div class="key-hint-item hidden" id="hint-skip">
+        <span class="key-cap" id="hint-skip-key">Space</span>
+        <span>Skip</span>
+      </div>
+      <div class="key-hint-item">
+        <span>No match</span>
+        <span class="key-cap" id="hint-right-key">→</span>
+      </div>
     </div>
 
     <div class="mobile-buttons hidden" id="mobile-buttons">
@@ -1277,6 +1349,34 @@
   // How often the alarm beep repeats while an interruption is up (see
   // triggerInterruption) — it keeps firing until "Close" is pressed.
   var INTERRUPTION_BEEP_INTERVAL_MS = 550;
+  // Codes that can never be bound to matchKey/noMatchKey — Escape is
+  // hardcoded to pause, Space is hardcoded to spacebarSkip (when that's
+  // on) — see the keydown listener and sanitizeSettings' upgrade path.
+  var RESERVED_KEY_CODES = { Escape: 1, Space: 1 };
+  // Friendly short labels for the KeyboardEvent.code values a player is
+  // likely to bind, for the play-screen key-hint rectangles, the
+  // rebind buttons, and the "How this works" instructions — see
+  // keyCodeLabel below, which this backs.
+  var KEY_CODE_LABELS = {
+    ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓',
+    Space: 'Space', Enter: 'Enter', Tab: 'Tab', Backspace: 'Backspace',
+    ShiftLeft: 'Shift', ShiftRight: 'Shift',
+    ControlLeft: 'Ctrl', ControlRight: 'Ctrl',
+    AltLeft: 'Alt', AltRight: 'Alt',
+    Comma: ',', Period: '.', Slash: '/', Semicolon: ';', Quote: '\'',
+    BracketLeft: '[', BracketRight: ']', Backslash: '\\',
+    Minus: '-', Equal: '=', Backquote: '`'
+  };
+  // code is a KeyboardEvent.code (layout-independent physical key), e.g.
+  // 'KeyA', 'Digit3', 'ArrowLeft' — not the character it types.
+  function keyCodeLabel(code) {
+    if (!code) return '';
+    if (KEY_CODE_LABELS[code]) return KEY_CODE_LABELS[code];
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+    if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+    if (/^Numpad[0-9]$/.test(code)) return 'Num' + code.slice(6);
+    return code; // unrecognized — show the raw code rather than nothing
+  }
   var STORAGE_KEY = 'apasat_settings_v1';
   var HISTORY_STORAGE_KEY = 'apasat_history_v1';
   var HISTORY_MAX_ENTRIES = 500; // soft cap so the history log can't grow without bound
@@ -1529,7 +1629,12 @@
     mode: 'adaptive',
     startingSpeedMs: 1200,
     durationSec: 120,
-    swapKeys: false,
+    // Which physical key (KeyboardEvent.code, not .key - layout-
+    // independent) triggers each response. Any key can be bound to
+    // either one except Escape/Space (see RESERVED_KEY_CODES) - not just
+    // the original arrow-key pair. See applyKeyBinding/keyCodeLabel.
+    matchKey: 'ArrowLeft',
+    noMatchKey: 'ArrowRight',
     instantFeedback: true,
     feedbackBeepVolume: 50,
     feedbackBeepStyle: 'beep', // 'beep' | 'fart' | 'boing' | 'honk' | 'laser' | 'random' — see BEEP_STYLES/playBeep
@@ -1726,6 +1831,16 @@
   function sanitizeSettings(s) {
     s = s || {};
     var validBeepStyles = { beep: 1, fart: 1, boing: 1, honk: 1, laser: 1, random: 1 }; // keep in sync with BEEP_STYLES, plus the special 'random' sentinel handled in playBeep
+    // Upgrade path from the old swapKeys boolean (arrows only) to a pair
+    // of independent key codes — also the fallback for a fresh install
+    // or a corrupt/reserved save, so a bad value can't silently disable
+    // both responses.
+    var matchKey = (typeof s.matchKey === 'string' && !RESERVED_KEY_CODES[s.matchKey]) ? s.matchKey : null;
+    var noMatchKey = (typeof s.noMatchKey === 'string' && !RESERVED_KEY_CODES[s.noMatchKey]) ? s.noMatchKey : null;
+    if (!matchKey || !noMatchKey || matchKey === noMatchKey) {
+      if (s.swapKeys) { matchKey = 'ArrowRight'; noMatchKey = 'ArrowLeft'; }
+      else { matchKey = DEFAULT_SETTINGS.matchKey; noMatchKey = DEFAULT_SETTINGS.noMatchKey; }
+    }
     var speed = parseInt(s.startingSpeedMs, 10);
     var dur = parseInt(s.durationSec, 10);
     var legacyVol = parseInt(s.beepVolume, 10); // pre-split single "beep volume" setting — fallback below only, so upgrading an old save doesn't silently reset either new slider
@@ -1761,7 +1876,8 @@
       mode: s.mode === 'fixed' ? 'fixed' : 'adaptive',
       startingSpeedMs: clamp(isNaN(speed) ? DEFAULT_SETTINGS.startingSpeedMs : speed, 200, 10000),
       durationSec: clamp(isNaN(dur) ? DEFAULT_SETTINGS.durationSec : dur, 30, 3600),
-      swapKeys: !!s.swapKeys,
+      matchKey: matchKey,
+      noMatchKey: noMatchKey,
       instantFeedback: s.instantFeedback === undefined ? DEFAULT_SETTINGS.instantFeedback : !!s.instantFeedback,
       feedbackBeepVolume: clamp(isNaN(feedbackVol) ? DEFAULT_SETTINGS.feedbackBeepVolume : feedbackVol, 0, 100),
       feedbackBeepStyle: validBeepStyles[s.feedbackBeepStyle] ? s.feedbackBeepStyle : DEFAULT_SETTINGS.feedbackBeepStyle,
@@ -3259,8 +3375,18 @@
     hideStimulus();
   }
 
+  var rebindingAction = null; // 'match' | 'noMatch' | null — see startRebind/applyKeyBinding
+
   document.addEventListener('keydown', function (e) {
+    if (rebindingAction) {
+      e.preventDefault();
+      if (!RESERVED_KEY_CODES[e.code]) applyKeyBinding(rebindingAction, e.code);
+      rebindingAction = null;
+      updateKeyBindButtons();
+      return;
+    }
     if (state.screen !== 'playing' || state.paused || state.interrupted) return;
+    setKeyHintPressed(e.code, true); // purely visual — runs even on a repeat, before the guard below
     if (e.repeat) return;
     if (e.key === 'Escape') { e.preventDefault(); pauseSession(); return; }
     if (state.settings.spacebarSkip && (e.code === 'Space' || e.key === ' ')) {
@@ -3268,10 +3394,12 @@
       skipCurrentTrial();
       return;
     }
-    var positiveKey = state.settings.swapKeys ? 'ArrowRight' : 'ArrowLeft';
-    var negativeKey = state.settings.swapKeys ? 'ArrowLeft' : 'ArrowRight';
-    if (e.key === positiveKey) { e.preventDefault(); handleResponse('positive'); }
-    else if (e.key === negativeKey) { e.preventDefault(); handleResponse('negative'); }
+    if (e.code === state.settings.matchKey) { e.preventDefault(); handleResponse('positive'); }
+    else if (e.code === state.settings.noMatchKey) { e.preventDefault(); handleResponse('negative'); }
+  });
+
+  document.addEventListener('keyup', function (e) {
+    setKeyHintPressed(e.code, false);
   });
 
   // ============================================================
@@ -3288,22 +3416,35 @@
   // ============================================================
   // Session lifecycle
   // ============================================================
+  // Match/no-match keep fixed left/right slots now — with arbitrary
+  // (not just left/right arrow) bindings there's no longer a meaningful
+  // "which side is this key on" to swap by, so only the glyph inside
+  // each keycap changes, never the layout. See keyCodeLabel.
   function applyKeyHintLabels() {
-    var swapped = state.settings.swapKeys;
-    el.hintLeft.textContent = swapped ? '← No match' : '← Match';
-    el.hintRight.textContent = swapped ? 'Match →' : 'No match →';
+    el.hintLeftKey.textContent = keyCodeLabel(state.settings.matchKey);
+    el.hintRightKey.textContent = keyCodeLabel(state.settings.noMatchKey);
     el.hintSkip.classList.toggle('hidden', !state.settings.spacebarSkip);
   }
 
+  // Live "you're pressing this key" feedback for the play-screen keycaps
+  // — called from the keydown/keyup listeners with every keycode, not
+  // just the bound ones, so it's a plain no-op for anything else.
+  function setKeyHintPressed(code, pressed) {
+    if (state.screen !== 'playing') return;
+    if (code === state.settings.matchKey) el.hintLeftKey.classList.toggle('pressed', pressed);
+    else if (code === state.settings.noMatchKey) el.hintRightKey.classList.toggle('pressed', pressed);
+    else if (code === 'Space') el.hintSkipKey.classList.toggle('pressed', pressed);
+  }
+
+  // Order is fixed now (Match, then No match) rather than mirroring
+  // swapKeys — with arbitrary key bindings there's no longer a
+  // meaningful "which side" for a touch-only control to match. Set
+  // explicitly rather than left to HTML source order, so this keeps
+  // matching what earlier versions of this setting already showed.
   function applyMobileModeVisibility() {
     el.mobileButtons.classList.toggle('hidden', !state.settings.mobileMode);
-    if (state.settings.swapKeys) {
-      el.mobilePositiveBtn.style.order = '2';
-      el.mobileNegativeBtn.style.order = '1';
-    } else {
-      el.mobilePositiveBtn.style.order = '1';
-      el.mobileNegativeBtn.style.order = '2';
-    }
+    el.mobilePositiveBtn.style.order = '1';
+    el.mobileNegativeBtn.style.order = '2';
   }
 
   function showScreen(name) {
@@ -3851,11 +3992,45 @@
   }
 
   function updateHintKeyLabels() {
-    var swapped = state.settings.swapKeys;
-    el.hintMatchKey.textContent = swapped ? 'Right' : 'Left';
-    el.hintNoMatchKey.textContent = swapped ? 'Left' : 'Right';
-    el.hintMatchKeyCct.textContent = swapped ? 'Right' : 'Left';
-    el.hintNoMatchKeyCct.textContent = swapped ? 'Left' : 'Right';
+    var matchLabel = keyCodeLabel(state.settings.matchKey);
+    var noMatchLabel = keyCodeLabel(state.settings.noMatchKey);
+    el.hintMatchKey.textContent = matchLabel;
+    el.hintNoMatchKey.textContent = noMatchLabel;
+    el.hintMatchKeyCct.textContent = matchLabel;
+    el.hintNoMatchKeyCct.textContent = noMatchLabel;
+  }
+
+  // Binding one action's key to whatever the other action is currently
+  // bound to would make the two responses indistinguishable, so this
+  // swaps the other one instead of allowing the collision — same "keep
+  // the pair sane" idea as the adaptive floor/ceiling and variable
+  // loudness min/max pairs elsewhere in this file.
+  function applyKeyBinding(action, code) {
+    var isMatch = action === 'match';
+    var thisKey = isMatch ? 'matchKey' : 'noMatchKey';
+    var otherKey = isMatch ? 'noMatchKey' : 'matchKey';
+    if (state.settings[otherKey] === code) {
+      state.settings[otherKey] = state.settings[thisKey];
+    }
+    state.settings[thisKey] = code;
+    applyKeyHintLabels();
+    updateHintKeyLabels();
+    persistSettings();
+  }
+
+  // Clicking the button that's already listening cancels it; clicking
+  // the other one switches which is listening. The keydown listener is
+  // what actually captures the next press — see rebindingAction there.
+  function startRebind(action) {
+    rebindingAction = (rebindingAction === action) ? null : action;
+    updateKeyBindButtons();
+  }
+
+  function updateKeyBindButtons() {
+    el.matchKeyBtn.classList.toggle('listening', rebindingAction === 'match');
+    el.matchKeyCap.textContent = (rebindingAction === 'match') ? '…' : keyCodeLabel(state.settings.matchKey);
+    el.nomatchKeyBtn.classList.toggle('listening', rebindingAction === 'noMatch');
+    el.nomatchKeyCap.textContent = (rebindingAction === 'noMatch') ? '…' : keyCodeLabel(state.settings.noMatchKey);
   }
 
   function applySpacebarSkipInstructionsVisibility() {
@@ -4096,7 +4271,7 @@
     el.weightStop.value = state.settings.stimulusWeights.stop;
     updateWeightReadouts();
 
-    setSegmented(el.keysToggle, String(state.settings.swapKeys));
+    updateKeyBindButtons();
     el.spacebarSkipToggle.checked = state.settings.spacebarSkip;
     el.stopRequiresSpacebarToggle.checked = state.settings.stopRequiresSpacebar;
     applyStopRequiresSpacebarFieldVisibility();
@@ -4317,14 +4492,8 @@
       persistSettings();
     });
 
-    el.keysToggle.addEventListener('click', function (e) {
-      var btn = e.target.closest('.seg-btn');
-      if (!btn) return;
-      state.settings.swapKeys = btn.getAttribute('data-value') === 'true';
-      setSegmented(el.keysToggle, String(state.settings.swapKeys));
-      updateHintKeyLabels();
-      persistSettings();
-    });
+    el.matchKeyBtn.addEventListener('click', function () { startRebind('match'); });
+    el.nomatchKeyBtn.addEventListener('click', function () { startRebind('noMatch'); });
 
     el.spacebarSkipToggle.addEventListener('change', function () {
       state.settings.spacebarSkip = el.spacebarSkipToggle.checked;
@@ -4693,7 +4862,10 @@
     el.weightPlusminusValue = q('weight-plusminus-value');
     el.weightStopValue = q('weight-stop-value');
     el.weightsResetBtn = q('weights-reset-btn');
-    el.keysToggle = document.querySelector('[data-group="keys"]');
+    el.matchKeyBtn = q('match-key-btn');
+    el.matchKeyCap = q('match-key-cap');
+    el.nomatchKeyBtn = q('nomatch-key-btn');
+    el.nomatchKeyCap = q('nomatch-key-cap');
     el.spacebarSkipToggle = q('spacebar-skip-toggle');
     el.spacebarSkipInstructions = q('spacebar-skip-instructions');
     el.stopRequiresSpacebarField = q('stop-requires-spacebar-field');
@@ -4763,9 +4935,10 @@
     el.numberBgImage = q('number-bg-image');
     el.dichoticVisualLeft = q('dichotic-visual-left');
     el.dichoticVisualRight = q('dichotic-visual-right');
-    el.hintLeft = q('hint-left');
-    el.hintRight = q('hint-right');
+    el.hintLeftKey = q('hint-left-key');
+    el.hintRightKey = q('hint-right-key');
     el.hintSkip = q('hint-skip');
+    el.hintSkipKey = q('hint-skip-key');
     el.mobileButtons = q('mobile-buttons');
     el.mobileNegativeBtn = q('mobile-negative-btn');
     el.mobilePositiveBtn = q('mobile-positive-btn');
