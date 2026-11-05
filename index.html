@@ -1485,6 +1485,21 @@
                   </div>
                   <input type="range" id="nback-level-slider" min="2" max="10" step="1">
                 </div>
+                <div class="setting setting-toggle">
+                  <label class="setting-text" for="nback-variable-toggle">
+                    <span class="setting-title">Variable n-back</span>
+                    <span class="setting-desc">Each trial looks back a random 1 to n digits instead of always n. The distance to use is shown above the number box.</span>
+                  </label>
+                  <label class="switch"><input type="checkbox" id="nback-variable-toggle"><span class="switch-track"></span></label>
+                </div>
+                <div class="setting setting-sub hidden" id="nback-floor-field">
+                  <div class="setting-row">
+                    <label class="setting-title" for="nback-floor-slider">Lowest look-back</label>
+                    <span class="readout" id="nback-floor-value"></span>
+                  </div>
+                  <span class="setting-desc">Each trial's distance is picked between this and your n-back level.</span>
+                  <input type="range" id="nback-floor-slider" min="1" max="1" step="1">
+                </div>
               </div>
             </div>
 
@@ -2445,6 +2460,9 @@
     bgVideoLinks: [],
     bgVideoBrightness: 45, // percent — opacity of the video layer, see bgVideoApplyBrightness
     // Arithmetic mode: each trial draws one enabled operation (see pickArithOp).
+    // Sub-option of nBackMode (meaningless without it): every trial looks back a random k steps, 1..nBackLevel.
+    nBackVariable: false,
+    nBackVariableFloor: 1, // lowest look-back k variable n-back may pick; always 1..nBackLevel-1
     arithMode: false,
     arithOps: { add: true, sub: true, mul: true, div: true },
     // Prospective memory mode — see the "Arithmetic mode + Prospective memory" section.
@@ -3638,7 +3656,7 @@
     trial.stimulusShown = true;
     trial.onsetTime = performance.now();
     showStimulus(trial.displayValue);
-    setOpSymbol(trial.arithOp);
+    setOpSymbol(trial.arithOp, trial.backK);
     ewmtShowImage(trial.ewmtImageUrl);
     showTimerId = null;
     state.showStimulusAt = null;
@@ -4100,6 +4118,8 @@
     var digitOnset = when; // when the digit(s) actually sound - trails `when` on a switch trial (cue beep first)
     var backDist = getBackDistance();
     var arithOp = state.settings.arithMode ? pickArithOp() : null;
+    var backK = (state.settings.nBackMode && state.settings.nBackVariable) ? pickBackK() : null; // variable n-back
+    if (backK) backDist = backK;
 
     // Variable loudness: one roll per trial, not per ear/call — so a
     // dichotic trial's two ears share the same level rather than each
@@ -4201,7 +4221,8 @@
       rt: null,
       dichotic: dichoticMeta,
       ewmtImageUrl: null,
-      arithOp: arithOp
+      arithOp: arithOp,
+      backK: backK
     };
 
     // Defensively clear any stale show/hide timers before arming this trial's.
@@ -4334,7 +4355,7 @@
   function pickArithOp() {
     var on = ARITH_KEYS.filter(function (k) { return state.settings.arithOps[k]; });
     if (!on.length) on = ['add'];
-    if (on.length > 1 && lastArithOp) on = on.filter(function (k) { return k !== lastArithOp; });
+    if (on.length > 2 && lastArithOp) on = on.filter(function (k) { return k !== lastArithOp; }); // only with 3+ choices: with two, skipping repeats would strictly alternate
     lastArithOp = on[Math.floor(Math.random() * on.length)];
     return lastArithOp;
   }
@@ -4360,7 +4381,24 @@
     pool = pool.filter(function (v) { return v < r - 1 || v > r + 1; });
     return pool[Math.floor(Math.random() * pool.length)];
   }
-  function setOpSymbol(op) { if (el.numberOp) el.numberOp.textContent = op ? ARITH_SYMBOLS[op] : ''; }
+  // The cue above the number box: the look-back distance (variable n-back) to the left of the operation symbol
+  // (arithmetic) — "2×" with both, just "2" or just "×" with one. Both sit in the same centred spot.
+  function setOpSymbol(op, k) { if (el.numberOp) el.numberOp.textContent = (k ? String(k) : '') + (op ? ARITH_SYMBOLS[op] : ''); }
+
+  // Variable n-back: this trial pairs the new digit with the one k back, k drawn from floor..n. k is also capped by
+  // how many digits have been spoken so far (every trial after the first can therefore be judged). Never the
+  // same k twice running when there are 3+ choices; with two, that would be a strict alternation.
+  var lastBackK = null;
+  function pickBackK() {
+    var lo = clamp(state.settings.nBackVariableFloor || 1, 1, Math.max(1, state.settings.nBackLevel - 1));
+    var kMax = Math.min(state.settings.nBackLevel, state.digitHistory.length);
+    if (kMax < lo) return null; // fewer digits heard than the floor, so nothing far enough back to pair with yet
+    var ks = [];
+    for (var i = lo; i <= kMax; i++) ks.push(i);
+    if (ks.length > 2 && lastBackK) ks = ks.filter(function (v) { return v !== lastBackK; });
+    lastBackK = ks[Math.floor(Math.random() * ks.length)];
+    return lastBackK;
+  }
 
   function sanitizeNewModes(o, s) {
     var D = DEFAULT_SETTINGS;
@@ -4368,6 +4406,8 @@
     var from = (s.arithOps && typeof s.arithOps === 'object') ? s.arithOps : D.arithOps, ops = {}, any = false;
     ARITH_KEYS.forEach(function (k) { ops[k] = !!from[k]; any = any || ops[k]; });
     if (!any) ops.add = true;
+    o.nBackVariable = !!s.nBackVariable;
+    o.nBackVariableFloor = n(s.nBackVariableFloor, D.nBackVariableFloor, 1, Math.max(1, o.nBackLevel - 1));
     o.arithMode = !!s.arithMode;
     o.arithOps = ops;
     var key = (typeof s.pmemKey === 'string' && !RESERVED_KEY_CODES[s.pmemKey]) ? s.pmemKey : D.pmemKey;
@@ -4652,8 +4692,23 @@
     }).join('');
   }
 
+  function syncNBackFloorUi() {
+    var s = state.settings;
+    if (!s || !el.nbackFloorField) return;
+    var top = Math.max(1, s.nBackLevel - 1);
+    if (s.nBackVariableFloor > top) s.nBackVariableFloor = top; // the floor can never reach n
+    if (s.nBackVariableFloor < 1) s.nBackVariableFloor = 1;
+    el.nbackFloorField.classList.toggle('hidden', !s.nBackVariable);
+    el.nbackFloorSlider.max = top;
+    el.nbackFloorSlider.disabled = top <= 1; // n = 2 leaves only 1 to choose
+    el.nbackFloorSlider.value = s.nBackVariableFloor;
+    el.nbackFloorValue.textContent = s.nBackVariableFloor + ' to ' + s.nBackLevel;
+  }
+
   function syncNewModesUi() {
     var s = state.settings;
+    el.nbackVariableToggle.checked = s.nBackVariable;
+    syncNBackFloorUi();
     el.arithToggle.checked = s.arithMode;
     el.arithOptions.classList.toggle('hidden', !s.arithMode);
     Array.prototype.forEach.call(el.arithOpsGroup.querySelectorAll('.chip-btn'), function (b) {
@@ -4693,6 +4748,8 @@
       if (f.lo && s[f.lo] > v) s[f.lo] = v; // ...and max can never drop below min
       syncNewModesUi(); persistSettings();
     });
+    el.nbackVariableToggle.addEventListener('change', function () { state.settings.nBackVariable = el.nbackVariableToggle.checked; syncNBackFloorUi(); persistSettings(); });
+    el.nbackFloorSlider.addEventListener('input', function () { state.settings.nBackVariableFloor = parseInt(el.nbackFloorSlider.value, 10); syncNBackFloorUi(); persistSettings(); });
     el.pmemRuleExitBtn.addEventListener('click', function () { el.pmemRuleExitBtn.blur(); closePmemRule(); });
     el.pmemOpenBtn.addEventListener('click', function () {
       el.pmemOpenBtn.blur();
@@ -4849,6 +4906,7 @@
     currentTrial = null;
     persevereSessionReset();
     lastArithOp = null;
+    lastBackK = null;
     pmemHideUi();
     state.pmem = state.settings.pmemMode ? pmemFresh() : null;
     if (state.pmem) state.pmem.nextRuleMs = pmemNextGapMs();
@@ -5068,6 +5126,8 @@
       dichoticMode: state.settings.dichoticMode,
       nBackMode: state.settings.nBackMode,
       nBackLevel: state.settings.nBackLevel,
+      nBackVariable: !!(state.settings.nBackMode && state.settings.nBackVariable),
+      nBackVariableFloor: state.settings.nBackVariableFloor,
       ewmtMode: state.settings.ewmtMode,
       cctMode: state.settings.cctMode,
       // Recorded as "was there actually video behind this session", not
@@ -5381,7 +5441,7 @@
       tagsEl.className = 'history-item-tags';
       var tagParts = [rec.mode === 'fixed' ? 'Fixed' : 'Adaptive'];
       if (rec.dichoticMode) tagParts.push('Dichotic');
-      if (rec.nBackMode) tagParts.push(rec.nBackLevel + '-back');
+      if (rec.nBackMode) tagParts.push(rec.nBackVariable ? 'Variable ' + (rec.nBackVariableFloor > 1 ? rec.nBackVariableFloor + '\u2013' + rec.nBackLevel + ' back' : rec.nBackLevel + '-back') : rec.nBackLevel + '-back');
       if (rec.ewmtMode) tagParts.push('eWMT');
       if (rec.cctMode) tagParts.push('CCT');
       if (rec.arithMode) tagParts.push('Arithmetic');
@@ -6570,7 +6630,15 @@
 
     // ---------- the task itself ----------
     var task = [];
-    if (s.nBackMode) {
+    if (s.nBackMode && s.nBackVariable) {
+      task.push(explainLine('The task',
+        'Digits from 1 to 9 are read aloud, one at a time. Each trial a number from <strong>' + s.nBackVariableFloor + ' to ' + s.nBackLevel +
+        '</strong> appears above the number box' + (s.arithMode ? ', just left of the operation symbol (<strong>2' + ARITH_SYMBOLS.mul +
+        '</strong> means: the digit spoken 2 back, times the digit just spoken)' : '') +
+        ' — it is how many digits back to look this time, so keep the last ' + s.nBackLevel + ' in mind. A number then flashes up: ' +
+        'decide whether it is the result for that pair. The first ' + s.nBackVariableFloor + (s.nBackVariableFloor === 1 ? ' digit has' : ' digits have') + ' nothing to pair with yet, and early on the distance ' +
+        'is limited to the digits heard so far.'));
+    } else if (s.nBackMode) {
       task.push(explainLine('The task',
         'Digits from 1 to 9 are read aloud, one at a time. Add each digit to the one spoken <strong>' +
         s.nBackLevel + ' digits back</strong> — not the one right before it, and not a running total. ' +
@@ -7064,6 +7132,7 @@
   }
 
   function updateNBackLevelReadout() {
+    syncNBackFloorUi();
     el.nbackLevelValue.textContent = state.settings.nBackLevel + '-back';
   }
 
@@ -8039,7 +8108,7 @@
      'pmemRuleBar', 'pmemRuleExitBtn', 'pmemInputOverlay', 'pmemInputTimer', 'pmemInputBar', 'pmemTyped', 'pmemResult',
      'pmemPad', 'pmemBackBtn', 'pmemSubmitBtn', 'pmemFlash', 'pmemFlashText', 'pmemReport', 'pmemAcc', 'pmemCorrect',
      'pmemWrong', 'pmemMissed', 'pmemFa', 'arithToggle', 'arithOptions', 'arithOpsGroup', 'pmemToggle', 'pmemOptions',
-     'pmemKeyBtn', 'pmemKeyCap', 'pmemFields', 'pmemFeedbackToggle', 'pmemNote'].forEach(function (n) {
+     'pmemKeyBtn', 'pmemKeyCap', 'pmemFields', 'pmemFeedbackToggle', 'pmemNote', 'nbackVariableToggle', 'nbackFloorField', 'nbackFloorSlider', 'nbackFloorValue'].forEach(function (n) {
       el[n] = q(n.replace(/([A-Z])/g, '-$1').toLowerCase());
     });
     el.numberDisplay = q('number-display');
