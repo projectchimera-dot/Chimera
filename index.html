@@ -992,6 +992,8 @@
   .pmem-report-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; font-weight: 600; }
   .pmem-report-head .mono { font-size: 1.6rem; color: var(--amber); }
 
+  .stair-presets { display: flex; flex-wrap: wrap; gap: 8px; margin: 2px 0 12px; }
+
   /* ---------- Report ---------- */
   #report-screen { align-items: center; justify-content: center; padding: 32px 20px; }
   .report-panel { width: 100%; max-width: 620px; padding: 32px; text-align: center; }
@@ -1180,7 +1182,7 @@
               <button type="button" class="seg-btn" data-value="adaptive">Adaptive</button>
               <button type="button" class="seg-btn" data-value="fixed">Fixed</button>
             </div>
-            <p class="setting-note">Adaptive speeds up after four correct in a row and slows down after four wrong. Fixed stays put.</p>
+            <p class="setting-note" id="speed-mode-note">Adaptive speeds up after four correct in a row and slows down after four wrong. Fixed stays put.</p>
           </div>
 
           <div class="setting">
@@ -1272,6 +1274,22 @@
               <button type="button" id="weights-reset-btn" class="btn btn-ghost btn-sm weight-reset-btn">Reset to defaults</button>
             </div>
           </details>
+
+          <div class="setting setting-toggle" id="stair-field">
+            <label class="setting-text" for="stair-toggle">
+              <span class="setting-title">Advanced speed &amp; scoring</span>
+              <span class="setting-desc">Streak rule, step sizes, speed limits, session length and how your speed score is worked out. Hidden settings still apply.</span>
+            </label>
+            <label class="switch"><input type="checkbox" id="stair-toggle"><span class="switch-track"></span></label>
+          </div>
+          <div class="setting hidden" id="stair-options">
+            <div class="stair-presets">
+              <button type="button" class="btn btn-ghost btn-sm" id="stair-defaults-btn">Defaults</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="stair-suggested-btn">Suggested defaults</button>
+            </div>
+            <div class="bounds-group" id="stair-fields"></div>
+            <p class="setting-note" id="stair-note"></p>
+          </div>
         </div>
 
         <!-- ---------- Controls ---------- -->
@@ -1910,13 +1928,15 @@
         <div class="stat-card"><div class="value mono" id="avg-rt">–</div><div class="label">Avg reaction time</div></div>
         <div class="stat-card"><div class="value mono" id="misses-count">–</div><div class="label">Misses</div></div>
         <div class="stat-card" id="false-alarms-card"><div class="value mono" id="false-alarms-count">–</div><div class="label">False alarms</div></div>
-        <div class="stat-card"><div class="value mono" id="final-speed">–</div><div class="label">Final speed</div></div>
+        <div class="stat-card"><div class="value mono" id="final-speed">–</div><div class="label" id="speed-score-label">Final speed</div></div>
         <div class="stat-card hidden" id="fastest-speed-card"><div class="value mono" id="fastest-speed">–</div><div class="label">Fastest speed</div></div>
         <div class="stat-card hidden" id="slowest-speed-card"><div class="value mono" id="slowest-speed">–</div><div class="label">Slowest speed</div></div>
         <div class="stat-card"><div class="value mono" id="total-trials">–</div><div class="label">Total trials</div></div>
         <div class="stat-card" id="longest-streak-card"><div class="value mono" id="longest-streak">–</div><div class="label">Longest streak</div></div>
         <div class="stat-card hidden" id="time-crunch-resumed-card"><div class="value mono" id="time-crunch-resumed">–</div><div class="label">Time-outs resumed</div></div>
       </div>
+
+      <p class="setting-note hidden" id="reversal-note"></p>
 
       <div class="pmem-report hidden" id="pmem-report">
         <div class="pmem-report-head"><span>Prospective memory</span><span class="mono" id="pmem-acc">–</span></div>
@@ -1963,6 +1983,7 @@
           <button type="button" class="graph-metric-btn" data-metric="lowestSpeed">Lowest speed</button>
           <button type="button" class="graph-metric-btn" data-metric="highestStreak">Highest streak</button>
           <button type="button" class="graph-metric-btn" data-metric="pmemAccuracy">Command accuracy</button>
+          <button type="button" class="graph-metric-btn" data-metric="speedScore">Speed score</button>
         </div>
 
         <div class="graph-chart-area">
@@ -2463,6 +2484,13 @@
     // Sub-option of nBackMode (meaningless without it): every trial looks back a random k steps, 1..nBackLevel.
     nBackVariable: false,
     nBackVariableFloor: 1, // lowest look-back k variable n-back may pick; always 1..nBackLevel-1
+    // Adaptive staircase (see evaluateTrial/stairMove). These defaults reproduce the original fixed rule:
+    // 4 correct in a row -> 100 ms faster, 4 wrong in a row -> 100 ms slower.
+    speedUpAfter: 4, slowDownAfter: 4,
+    speedUpStepMs: 100, slowDownStepMs: 100,
+    // The speed score is the average speed at the last reversalAvgCount reversals, after dropping the first reversalSkip.
+    reversalAvgCount: 6, reversalSkip: 2,
+    stairShow: false, // UI only: whether the advanced block is expanded in the menu (its values apply either way)
     arithMode: false,
     arithOps: { add: true, sub: true, mul: true, div: true },
     // Prospective memory mode — see the "Arithmetic mode + Prospective memory" section.
@@ -2518,7 +2546,16 @@
         stop: DEFAULT_SETTINGS.stimulusWeights.stop
       };
     }
-    return { sum: s, plusminus: p, stop: o };
+    // Always stored as whole percentages that total exactly 100 (largest-remainder rounding).
+    var tot = s + p + o;
+    var raw = [s, p, o].map(function (v) { return v / tot * 100; });
+    var out = raw.map(Math.floor);
+    var left = 100 - out[0] - out[1] - out[2];
+    raw.map(function (v, i) { return { f: v - out[i], i: i }; })
+      .sort(function (a, b) { return b.f - a.f; })
+      .slice(0, left)
+      .forEach(function (x) { out[x.i]++; });
+    return { sum: out[0], plusminus: out[1], stop: out[2] };
   }
 
   function sanitizeHexColor(c, fallback) {
@@ -3714,10 +3751,9 @@
       state.mistakePenaltyStreak = 0;
       state.currentStreak++;
       if (state.currentStreak > state.longestStreak) state.longestStreak = state.currentStreak;
-      if (state.settings.mode === 'adaptive' && state.correctStreak >= 4) {
+      if (state.settings.mode === 'adaptive' && state.correctStreak >= state.settings.speedUpAfter) {
         bounds = getAdaptiveBounds();
-        state.currentISI = Math.max(bounds.floor, state.currentISI - 100);
-        if (state.currentISI < state.fastestISI) state.fastestISI = state.currentISI;
+        stairMove(-1, Math.max(bounds.floor, state.currentISI - state.settings.speedUpStepMs));
         state.correctStreak = 0;
         updateSpeedIndicator();
       }
@@ -3725,10 +3761,9 @@
       state.incorrectStreak++;
       state.correctStreak = 0;
       state.currentStreak = 0;
-      if (state.settings.mode === 'adaptive' && state.incorrectStreak >= 4) {
+      if (state.settings.mode === 'adaptive' && state.incorrectStreak >= state.settings.slowDownAfter) {
         bounds = getAdaptiveBounds();
-        state.currentISI = Math.min(bounds.ceiling, state.currentISI + 100);
-        if (state.currentISI > state.slowestISI) state.slowestISI = state.currentISI;
+        stairMove(1, Math.min(bounds.ceiling, state.currentISI + state.settings.slowDownStepMs));
         state.incorrectStreak = 0;
         updateSpeedIndicator();
       }
@@ -4408,6 +4443,13 @@
     if (!any) ops.add = true;
     o.nBackVariable = !!s.nBackVariable;
     o.nBackVariableFloor = n(s.nBackVariableFloor, D.nBackVariableFloor, 1, Math.max(1, o.nBackLevel - 1));
+    o.speedUpAfter = n(s.speedUpAfter, D.speedUpAfter, 1, 20);
+    o.slowDownAfter = n(s.slowDownAfter, D.slowDownAfter, 1, 20);
+    o.speedUpStepMs = n(s.speedUpStepMs, D.speedUpStepMs, 1, 1000);
+    o.slowDownStepMs = n(s.slowDownStepMs, D.slowDownStepMs, 1, 1000);
+    o.reversalAvgCount = n(s.reversalAvgCount, D.reversalAvgCount, 1, 50);
+    o.reversalSkip = n(s.reversalSkip, D.reversalSkip, 0, 20);
+    o.stairShow = !!s.stairShow;
     o.arithMode = !!s.arithMode;
     o.arithOps = ops;
     var key = (typeof s.pmemKey === 'string' && !RESERVED_KEY_CODES[s.pmemKey]) ? s.pmemKey : D.pmemKey;
@@ -4709,6 +4751,7 @@
     var s = state.settings;
     el.nbackVariableToggle.checked = s.nBackVariable;
     syncNBackFloorUi();
+    syncStairUi();
     el.arithToggle.checked = s.arithMode;
     el.arithOptions.classList.toggle('hidden', !s.arithMode);
     Array.prototype.forEach.call(el.arithOpsGroup.querySelectorAll('.chip-btn'), function (b) {
@@ -4727,6 +4770,7 @@
 
   function wireNewModes() {
     buildNewModesUi();
+    wireStairUi();
     el.arithToggle.addEventListener('change', function () { state.settings.arithMode = el.arithToggle.checked; syncNewModesUi(); persistSettings(); });
     el.arithOpsGroup.addEventListener('click', function (e) {
       var b = e.target.closest('.chip-btn');
@@ -4761,6 +4805,172 @@
     });
     el.pmemBackBtn.addEventListener('click', function () { el.pmemBackBtn.blur(); pmemBackspace(); });
     el.pmemSubmitBtn.addEventListener('click', function () { el.pmemSubmitBtn.blur(); submitPmemInput(); });
+  }
+
+  // ============================================================
+  // Speed staircase: configurable rule, separate step sizes, reversal-based score
+  // ============================================================
+  // One staircase move. A reversal is a move opposite to the previous real move; it is recorded at the speed
+  // the triggering trial ran at (the turning point). A move the speed limits swallow changes nothing, so it
+  // neither counts as a move nor sets a direction.
+  function stairMove(dir, newISI) {
+    var old = state.currentISI;
+    if (newISI !== old) {
+      if (!state.reversals) state.reversals = [];
+      if (state.lastDir && dir !== state.lastDir) state.reversals.push({ t: state.results.length, ms: old });
+      state.lastDir = dir;
+      state.currentISI = newISI;
+    }
+    if (state.currentISI < state.fastestISI) state.fastestISI = state.currentISI;
+    if (state.currentISI > state.slowestISI) state.slowestISI = state.currentISI;
+    updateSpeedIndicator();
+  }
+
+  // Main speed score: average speed at the last N reversals after dropping the first S. Null until at least one is left.
+  function stairScore() {
+    var s = state.settings;
+    if (s.mode !== 'adaptive') return { ms: null, used: 0 };
+    var pool = (state.reversals || []).slice(s.reversalSkip).slice(-s.reversalAvgCount);
+    if (!pool.length) return { ms: null, used: 0 };
+    var sum = 0;
+    pool.forEach(function (r) { sum += r.ms; });
+    return { ms: sum / pool.length, used: pool.length };
+  }
+
+  // The accuracy the staircase settles at, assuming a steady chance p of being right at any given speed. The
+  // speed stops drifting when P(N correct in a row before K errors in a row) x speed-up step equals the
+  // opposite chance x slow-down step.
+  function stairEquilibrium(N, K, up, down) {
+    var target = down / (up + down), lo = 0, hi = 1;
+    for (var i = 0; i < 60; i++) {
+      var p = (lo + hi) / 2, q2 = 1 - p;
+      var a = Math.pow(p, N - 1) * (1 - Math.pow(q2, K)), b = Math.pow(q2, K - 1) * (1 - Math.pow(p, N));
+      if (a / (a + b) < target) lo = p; else hi = p;
+    }
+    return (lo + hi) / 2;
+  }
+
+  // Moving one probability slider rescales the other two proportionally so the total stays exactly 100.
+  function rebalanceWeights(key, v) {
+    var w = state.settings.stimulusWeights;
+    var others = ['sum', 'plusminus', 'stop'].filter(function (k) { return k !== key; });
+    v = clamp(Math.round(v), 0, 100);
+    var rest = 100 - v, a = w[others[0]], b = w[others[1]];
+    var na = (a + b) > 0 ? Math.round(rest * a / (a + b)) : Math.floor(rest / 2);
+    w[key] = v; w[others[0]] = na; w[others[1]] = rest - na;
+  }
+
+  var STAIR_PRESETS = {
+    defaults: { speedUpAfter: 4, slowDownAfter: 4, speedUpStepMs: 100, slowDownStepMs: 100 },
+    suggested: { speedUpAfter: 4, slowDownAfter: 1, speedUpStepMs: 98, slowDownStepMs: 100 }
+  };
+  function plainStair(k, label, unit, min, max) {
+    return { k: k, label: label, unit: unit, min: min, max: max, step: 1,
+      get: function (s) { return s[k]; }, set: function (s, v) { s[k] = v; } };
+  }
+  // "fast"/"slow" are the optional floor/ceiling shown as plain numbers: a limit sitting at the engine's own
+  // hard limit simply means "off".
+  var STAIR_FIELDS = [
+    { k: 'start', label: 'Starting speed', unit: 'ms', min: 200, max: 10000, step: 10,
+      get: function (s) { return s.startingSpeedMs; }, set: function (s, v) { s.startingSpeedMs = v; } },
+    { k: 'fast', label: 'Fastest allowed', unit: 'ms', min: 200, max: 10000, step: 10,
+      get: function (s) { return s.adaptiveFloorEnabled ? s.adaptiveFloorMs : MIN_ISI; },
+      set: function (s, v) { s.adaptiveFloorMs = v; s.adaptiveFloorEnabled = v > MIN_ISI; } },
+    { k: 'slow', label: 'Slowest allowed', unit: 'ms', min: 200, max: 10000, step: 10,
+      get: function (s) { return s.adaptiveCeilingEnabled ? s.adaptiveCeilingMs : MAX_ISI; },
+      set: function (s, v) { s.adaptiveCeilingMs = v; s.adaptiveCeilingEnabled = v < MAX_ISI; } },
+    { k: 'dur', label: 'Session length', unit: 'min', min: 0.5, max: 60, step: 0.5, dec: true,
+      get: function (s) { return Math.round(s.durationSec / 6) / 10; }, set: function (s, v) { s.durationSec = Math.round(v * 60); } },
+    plainStair('speedUpAfter', 'Correct in a row to speed up (N)', '', 1, 20),
+    plainStair('slowDownAfter', 'Errors in a row to slow down (K)', '', 1, 20),
+    plainStair('speedUpStepMs', 'Speed-up step', 'ms', 1, 1000),
+    plainStair('slowDownStepMs', 'Slow-down step', 'ms', 1, 1000),
+    plainStair('reversalAvgCount', 'Score: average the last reversals', '', 1, 50),
+    plainStair('reversalSkip', 'Score: skip the first reversals', '', 0, 20)
+  ];
+  var STAIR_BY_KEY = {};
+  STAIR_FIELDS.forEach(function (f) { STAIR_BY_KEY[f.k] = f; });
+
+  // Re-reads the Session tab's own controls (start speed, limits, length) after this block changed them.
+  function syncSessionControls() {
+    var s = state.settings;
+    el.speedSlider.value = s.startingSpeedMs;
+    el.speedValue.textContent = s.startingSpeedMs + ' ms';
+    el.floorToggle.checked = s.adaptiveFloorEnabled;
+    el.floorValue.value = s.adaptiveFloorMs;
+    el.ceilingToggle.checked = s.adaptiveCeilingEnabled;
+    el.ceilingValue.value = s.adaptiveCeilingMs;
+    applyBoundInputVisibility();
+    var d = String(s.durationSec);
+    if (['60', '120', '180', '300', '600'].indexOf(d) !== -1) {
+      el.durationSelect.value = d;
+      el.durationCustom.classList.add('hidden');
+    } else {
+      el.durationSelect.value = 'custom';
+      el.durationCustom.classList.remove('hidden');
+      el.durationCustom.value = Math.round(s.durationSec / 6) / 10;
+    }
+  }
+
+  function syncStairUi() {
+    var s = state.settings;
+    if (!s || !el.stairFields) return;
+    el.stairToggle.checked = s.stairShow;
+    el.stairOptions.classList.toggle('hidden', !s.stairShow);
+    STAIR_FIELDS.forEach(function (f) {
+      var inp = q('stair-f-' + f.k);
+      if (inp !== document.activeElement) inp.value = f.get(s); // never rewrite a box mid-edit
+    });
+    var p = stairEquilibrium(s.speedUpAfter, s.slowDownAfter, s.speedUpStepMs, s.slowDownStepMs);
+    el.stairNote.textContent = 'Assuming a steady chance of being right at each speed, the speed settles where you are right about ' +
+      Math.round(p * 100) + '% of the time' + (s.mode === 'adaptive' ? '.' : ' \u2014 but Fixed mode is on, so none of this applies yet.');
+    el.speedModeNote.textContent = 'Adaptive speeds up after ' + s.speedUpAfter + ' correct in a row and slows down after ' +
+      s.slowDownAfter + ' wrong' + (s.slowDownAfter > 1 ? ' in a row' : '') + '. Fixed stays put.';
+  }
+
+  function applyStairPreset(name) {
+    var s = state.settings, D = DEFAULT_SETTINGS, pr = STAIR_PRESETS[name];
+    Object.keys(pr).forEach(function (k) { s[k] = pr[k]; });
+    s.reversalAvgCount = D.reversalAvgCount; s.reversalSkip = D.reversalSkip;
+    s.startingSpeedMs = D.startingSpeedMs; s.durationSec = D.durationSec;
+    s.adaptiveFloorEnabled = false; s.adaptiveFloorMs = MIN_ISI;
+    s.adaptiveCeilingEnabled = false; s.adaptiveCeilingMs = MAX_ISI;
+    syncSessionControls();
+    syncStairUi();
+    persistSettings();
+  }
+
+  // Values are committed on change (blur / Enter / spinner), never mid-keystroke, then clamped and shown back.
+  function stairFieldEdit(input) {
+    var f = STAIR_BY_KEY[input.getAttribute('data-k')], s = state.settings;
+    if (!f) return;
+    var v = parseFloat(input.value);
+    if (!isNaN(v)) {
+      v = clamp(v, f.min, f.max);
+      f.set(s, f.dec ? v : Math.round(v));
+      if (f.k === 'fast' || f.k === 'slow') { // the two limits can never cross
+        var a = STAIR_BY_KEY.fast.get(s), b = STAIR_BY_KEY.slow.get(s);
+        if (a > b) { if (f.k === 'fast') STAIR_BY_KEY.slow.set(s, a); else STAIR_BY_KEY.fast.set(s, b); }
+      }
+      if (f.k === 'start' || f.k === 'fast' || f.k === 'slow') { // and the starting speed stays between them
+        s.startingSpeedMs = clamp(s.startingSpeedMs, STAIR_BY_KEY.fast.get(s), STAIR_BY_KEY.slow.get(s));
+      }
+      syncSessionControls();
+      persistSettings();
+    }
+    STAIR_FIELDS.forEach(function (g) { q('stair-f-' + g.k).value = g.get(s); });
+  }
+
+  function wireStairUi() {
+    el.stairFields.innerHTML = STAIR_FIELDS.map(function (f) {
+      return '<div class="bound-row"><label class="bound-label" for="stair-f-' + f.k + '">' + f.label +
+        '</label><span class="bound-input-wrap"><input type="number" id="stair-f-' + f.k + '" data-k="' + f.k +
+        '" min="' + f.min + '" max="' + f.max + '" step="' + f.step + '"><span class="unit">' + f.unit + '</span></span></div>';
+    }).join('');
+    el.stairToggle.addEventListener('change', function () { state.settings.stairShow = el.stairToggle.checked; syncStairUi(); persistSettings(); });
+    el.stairDefaultsBtn.addEventListener('click', function () { applyStairPreset('defaults'); });
+    el.stairSuggestedBtn.addEventListener('click', function () { applyStairPreset('suggested'); });
+    el.stairFields.addEventListener('change', function (e) { stairFieldEdit(e.target); });
   }
 
   var rebindingAction = null; // 'match' | 'noMatch' | null — see startRebind/applyKeyBinding
@@ -4888,6 +5098,8 @@
     // so far — evaluateTrial narrows these as adaptive adjustments happen.
     state.fastestISI = state.currentISI;
     state.slowestISI = state.currentISI;
+    state.reversals = [];
+    state.lastDir = 0;
     state.isiSum = 0;
     state.isiSampleCount = 0;
     state.mistakePenaltyStreak = 0;
@@ -5144,6 +5356,13 @@
       finalSpeedMs: state.currentISI,
       fastestSpeedMs: state.fastestISI,
       slowestSpeedMs: state.slowestISI,
+      speedScoreMs: stairScore().ms,
+      speedScoreUsed: stairScore().used,
+      reversals: (state.reversals || []).slice(),
+      reversalSkip: state.settings.reversalSkip,
+      reversalAvgCount: state.settings.reversalAvgCount,
+      stairRule: { up: state.settings.speedUpAfter, down: state.settings.slowDownAfter,
+        upStepMs: state.settings.speedUpStepMs, downStepMs: state.settings.slowDownStepMs },
       avgSpeedMs: state.isiSampleCount ? (state.isiSum / state.isiSampleCount) : null,
       totalTrials: total,
       overallAccuracy: overallAcc,
@@ -5170,7 +5389,20 @@
     el.avgRt.textContent = stats.avgRtMs !== null ? Math.round(stats.avgRtMs) + ' ms' : '–';
     el.missesCount.textContent = stats.misses;
     el.falseAlarmsCount.textContent = stats.falseAlarms;
-    el.finalSpeed.textContent = stats.finalSpeedMs + ' ms';
+    if (stats.mode === 'adaptive') {
+      el.finalSpeed.textContent = stats.speedScoreMs === null ? '\u2013' : Math.round(stats.speedScoreMs) + ' ms';
+      el.speedScoreLabel.textContent = stats.speedScoreMs === null
+        ? 'Speed score (needs more reversals)' : 'Speed score (last ' + stats.speedScoreUsed + ' reversals)';
+      el.reversalNote.classList.remove('hidden');
+      el.reversalNote.textContent = stats.reversals.length
+        ? 'Reversal speeds (ms): ' + stats.reversals.map(function (r, i) { return i < stats.reversalSkip ? '(' + r.ms + ')' : String(r.ms); }).join(' \u00b7 ') +
+          ' \u2014 brackets are skipped, and the score averages the last ' + stats.reversalAvgCount + ' of the rest.'
+        : 'The speed never changed direction, so there were no reversals to score.';
+    } else {
+      el.finalSpeed.textContent = stats.finalSpeedMs + ' ms';
+      el.speedScoreLabel.textContent = 'Speed (fixed)';
+      el.reversalNote.classList.add('hidden');
+    }
     el.totalTrials.textContent = stats.totalTrials;
 
     // Longest streak is a fair "how well did you actually do" number only
@@ -5277,6 +5509,11 @@
       // "Lowest speed" = the slowest pace reached that session, i.e.
       // the highest ISI in ms — see slowestSpeedMs/state.slowestISI.
       get: function (rec) { return rec.slowestSpeedMs; },
+      format: function (v) { return Math.round(v) + ' ms'; }
+    },
+    speedScore: {
+      label: 'Speed score',
+      get: function (rec) { return rec.speedScoreMs == null ? null : rec.speedScoreMs; },
       format: function (v) { return Math.round(v) + ' ms'; }
     },
     pmemAccuracy: {
@@ -5465,7 +5702,7 @@
       var stats = document.createElement('div');
       stats.className = 'history-item-stats';
       stats.appendChild(historyStatBlock(Math.round(rec.overallAccuracy) + '%', 'Accuracy'));
-      stats.appendChild(historyStatBlock(rec.finalSpeedMs + ' ms', 'Speed'));
+      stats.appendChild(historyStatBlock(rec.speedScoreMs != null ? Math.round(rec.speedScoreMs) + ' ms' : (rec.reversals && rec.mode === 'adaptive') ? '\u2013' : rec.finalSpeedMs + ' ms', 'Speed'));
       stats.appendChild(historyStatBlock(String(rec.totalTrials), 'Trials'));
       if (rec.pmem && rec.pmem.accuracy != null) stats.appendChild(historyStatBlock(Math.round(rec.pmem.accuracy) + '%', 'Commands'));
 
@@ -6623,6 +6860,7 @@
   }
 
   function renderSettingsExplainer() {
+    syncStairUi();
     pmemUpdateNote();
     if (!state.settings || !el.settingsExplainer) return;
     var s = state.settings;
@@ -6729,8 +6967,10 @@
     var pace = [];
     if (s.mode === 'adaptive') {
       var adaptive = 'The gap between digits starts at <strong>' + s.startingSpeedMs + ' ms</strong> and ' +
-        'moves with you: four correct in a row shortens it by 100 ms, four wrong in a row stretches it ' +
-        'back out by 100 ms.';
+        'moves with you: ' + s.speedUpAfter + ' correct in a row shortens it by ' + s.speedUpStepMs + ' ms, ' +
+        (s.slowDownAfter === 1 ? 'a wrong answer' : s.slowDownAfter + ' wrong in a row') + ' stretches it ' +
+        'back out by ' + s.slowDownStepMs + ' ms. Your speed score is the average speed at the last ' + s.reversalAvgCount +
+        ' reversals (turning points), skipping the first ' + s.reversalSkip + '.';
       var limits = [];
       if (s.adaptiveFloorEnabled) limits.push('never faster than ' + s.adaptiveFloorMs + ' ms');
       if (s.adaptiveCeilingEnabled) limits.push('never slower than ' + s.adaptiveCeilingMs + ' ms');
@@ -7136,16 +7376,15 @@
     el.nbackLevelValue.textContent = state.settings.nBackLevel + '-back';
   }
 
-  // Readouts show each slider's *normalized* share (what pickStimulus
-  // will actually use), not the raw 0-100 slider value, since the three
-  // sliders don't need to add up to 100 themselves.
+  // The three sliders are linked (see rebalanceWeights) and always total exactly 100,
+  // so each readout is simply its own slider's value.
   function updateWeightReadouts() {
     var w = state.settings.stimulusWeights;
     var total = w.sum + w.plusminus + w.stop;
     if (total <= 0) total = 1; // display-only guard; sanitizeStimulusWeights keeps stored settings from ever reaching this
-    el.weightSumValue.textContent = Math.round(w.sum / total * 100) + '%';
-    el.weightPlusminusValue.textContent = Math.round(w.plusminus / total * 100) + '%';
-    el.weightStopValue.textContent = Math.round(w.stop / total * 100) + '%';
+    el.weightSumValue.textContent = w.sum + '%'; el.weightSum.value = w.sum;
+    el.weightPlusminusValue.textContent = w.plusminus + '%'; el.weightPlusminus.value = w.plusminus;
+    el.weightStopValue.textContent = w.stop + '%'; el.weightStop.value = w.stop;
   }
 
   function applyZenModeClass() {
@@ -7788,17 +8027,17 @@
     });
 
     el.weightSum.addEventListener('input', function () {
-      state.settings.stimulusWeights.sum = parseInt(el.weightSum.value, 10);
+      rebalanceWeights('sum', parseInt(el.weightSum.value, 10));
       updateWeightReadouts();
       persistSettings();
     });
     el.weightPlusminus.addEventListener('input', function () {
-      state.settings.stimulusWeights.plusminus = parseInt(el.weightPlusminus.value, 10);
+      rebalanceWeights('plusminus', parseInt(el.weightPlusminus.value, 10));
       updateWeightReadouts();
       persistSettings();
     });
     el.weightStop.addEventListener('input', function () {
-      state.settings.stimulusWeights.stop = parseInt(el.weightStop.value, 10);
+      rebalanceWeights('stop', parseInt(el.weightStop.value, 10));
       updateWeightReadouts();
       persistSettings();
     });
@@ -8108,7 +8347,7 @@
      'pmemRuleBar', 'pmemRuleExitBtn', 'pmemInputOverlay', 'pmemInputTimer', 'pmemInputBar', 'pmemTyped', 'pmemResult',
      'pmemPad', 'pmemBackBtn', 'pmemSubmitBtn', 'pmemFlash', 'pmemFlashText', 'pmemReport', 'pmemAcc', 'pmemCorrect',
      'pmemWrong', 'pmemMissed', 'pmemFa', 'arithToggle', 'arithOptions', 'arithOpsGroup', 'pmemToggle', 'pmemOptions',
-     'pmemKeyBtn', 'pmemKeyCap', 'pmemFields', 'pmemFeedbackToggle', 'pmemNote', 'nbackVariableToggle', 'nbackFloorField', 'nbackFloorSlider', 'nbackFloorValue'].forEach(function (n) {
+     'pmemKeyBtn', 'pmemKeyCap', 'pmemFields', 'pmemFeedbackToggle', 'pmemNote', 'nbackVariableToggle', 'nbackFloorField', 'nbackFloorSlider', 'nbackFloorValue', 'speedScoreLabel', 'reversalNote', 'stairToggle', 'stairOptions', 'stairDefaultsBtn', 'stairSuggestedBtn', 'stairFields', 'stairNote', 'speedModeNote'].forEach(function (n) {
       el[n] = q(n.replace(/([A-Z])/g, '-$1').toLowerCase());
     });
     el.numberDisplay = q('number-display');
