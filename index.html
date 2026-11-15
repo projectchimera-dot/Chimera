@@ -994,6 +994,9 @@
 
   .stair-presets { display: flex; flex-wrap: wrap; gap: 8px; margin: 2px 0 12px; }
 
+  .stair-all { display: inline-flex; align-items: center; gap: 5px; margin-right: 8px; font-size: 0.85rem; color: var(--text-muted); cursor: pointer; }
+  .bound-input-wrap input[type="number"]:disabled { opacity: 0.4; }
+
   /* ---------- Report ---------- */
   #report-screen { align-items: center; justify-content: center; padding: 32px 20px; }
   .report-panel { width: 100%; max-width: 620px; padding: 32px; text-align: center; }
@@ -2490,6 +2493,7 @@
     speedUpStepMs: 100, slowDownStepMs: 100,
     // The speed score is the average speed at the last reversalAvgCount reversals, after dropping the first reversalSkip.
     reversalAvgCount: 6, reversalSkip: 2,
+    reversalAvgAll: false, // true = ignore reversalAvgCount and average every reversal left after the skip
     stairShow: false, // UI only: whether the advanced block is expanded in the menu (its values apply either way)
     arithMode: false,
     arithOps: { add: true, sub: true, mul: true, div: true },
@@ -4449,6 +4453,7 @@
     o.slowDownStepMs = n(s.slowDownStepMs, D.slowDownStepMs, 1, 1000);
     o.reversalAvgCount = n(s.reversalAvgCount, D.reversalAvgCount, 1, 50);
     o.reversalSkip = n(s.reversalSkip, D.reversalSkip, 0, 20);
+    o.reversalAvgAll = !!s.reversalAvgAll;
     o.stairShow = !!s.stairShow;
     o.arithMode = !!s.arithMode;
     o.arithOps = ops;
@@ -4830,7 +4835,8 @@
   function stairScore() {
     var s = state.settings;
     if (s.mode !== 'adaptive') return { ms: null, used: 0 };
-    var pool = (state.reversals || []).slice(s.reversalSkip).slice(-s.reversalAvgCount);
+    var pool = (state.reversals || []).slice(s.reversalSkip);
+    if (!s.reversalAvgAll) pool = pool.slice(-s.reversalAvgCount); // "All" keeps everything left after the skip
     if (!pool.length) return { ms: null, used: 0 };
     var sum = 0;
     pool.forEach(function (r) { sum += r.ms; });
@@ -4885,11 +4891,12 @@
     plainStair('slowDownAfter', 'Errors in a row to slow down (K)', '', 1, 20),
     plainStair('speedUpStepMs', 'Speed-up step', 'ms', 1, 1000),
     plainStair('slowDownStepMs', 'Slow-down step', 'ms', 1, 1000),
-    plainStair('reversalAvgCount', 'Score: average the last reversals', '', 1, 50),
+    plainStair('reversalAvgCount', 'Score: reversals to average (last N)', '', 1, 50),
     plainStair('reversalSkip', 'Score: skip the first reversals', '', 0, 20)
   ];
   var STAIR_BY_KEY = {};
   STAIR_FIELDS.forEach(function (f) { STAIR_BY_KEY[f.k] = f; });
+  STAIR_BY_KEY.reversalAvgCount.allKey = 'reversalAvgAll'; // gets an "All" box
 
   // Re-reads the Session tab's own controls (start speed, limits, length) after this block changed them.
   function syncSessionControls() {
@@ -4921,6 +4928,11 @@
       var inp = q('stair-f-' + f.k);
       if (inp !== document.activeElement) inp.value = f.get(s); // never rewrite a box mid-edit
     });
+    STAIR_FIELDS.forEach(function (f) {
+      if (!f.allKey) return;
+      q('stair-all-' + f.k).checked = !!s[f.allKey];
+      q('stair-f-' + f.k).disabled = !!s[f.allKey]; // "All" overrides the number
+    });
     var p = stairEquilibrium(s.speedUpAfter, s.slowDownAfter, s.speedUpStepMs, s.slowDownStepMs);
     el.stairNote.textContent = 'Assuming a steady chance of being right at each speed, the speed settles where you are right about ' +
       Math.round(p * 100) + '% of the time' + (s.mode === 'adaptive' ? '.' : ' \u2014 but Fixed mode is on, so none of this applies yet.');
@@ -4931,7 +4943,7 @@
   function applyStairPreset(name) {
     var s = state.settings, D = DEFAULT_SETTINGS, pr = STAIR_PRESETS[name];
     Object.keys(pr).forEach(function (k) { s[k] = pr[k]; });
-    s.reversalAvgCount = D.reversalAvgCount; s.reversalSkip = D.reversalSkip;
+    s.reversalAvgCount = D.reversalAvgCount; s.reversalSkip = D.reversalSkip; s.reversalAvgAll = D.reversalAvgAll;
     s.startingSpeedMs = D.startingSpeedMs; s.durationSec = D.durationSec;
     s.adaptiveFloorEnabled = false; s.adaptiveFloorMs = MIN_ISI;
     s.adaptiveCeilingEnabled = false; s.adaptiveCeilingMs = MAX_ISI;
@@ -4964,13 +4976,18 @@
   function wireStairUi() {
     el.stairFields.innerHTML = STAIR_FIELDS.map(function (f) {
       return '<div class="bound-row"><label class="bound-label" for="stair-f-' + f.k + '">' + f.label +
-        '</label><span class="bound-input-wrap"><input type="number" id="stair-f-' + f.k + '" data-k="' + f.k +
+        '</label><span class="bound-input-wrap">' + (f.allKey ? '<label class="stair-all"><input type="checkbox" data-all="' + f.allKey +
+        '" id="stair-all-' + f.k + '"> All</label>' : '') + '<input type="number" id="stair-f-' + f.k + '" data-k="' + f.k +
         '" min="' + f.min + '" max="' + f.max + '" step="' + f.step + '"><span class="unit">' + f.unit + '</span></span></div>';
     }).join('');
     el.stairToggle.addEventListener('change', function () { state.settings.stairShow = el.stairToggle.checked; syncStairUi(); persistSettings(); });
     el.stairDefaultsBtn.addEventListener('click', function () { applyStairPreset('defaults'); });
     el.stairSuggestedBtn.addEventListener('click', function () { applyStairPreset('suggested'); });
-    el.stairFields.addEventListener('change', function (e) { stairFieldEdit(e.target); });
+    el.stairFields.addEventListener('change', function (e) {
+      var allKey = e.target.getAttribute('data-all');
+      if (allKey) { state.settings[allKey] = e.target.checked; syncStairUi(); persistSettings(); }
+      else stairFieldEdit(e.target);
+    });
   }
 
   var rebindingAction = null; // 'match' | 'noMatch' | null — see startRebind/applyKeyBinding
@@ -5361,6 +5378,7 @@
       reversals: (state.reversals || []).slice(),
       reversalSkip: state.settings.reversalSkip,
       reversalAvgCount: state.settings.reversalAvgCount,
+      reversalAvgAll: state.settings.reversalAvgAll,
       stairRule: { up: state.settings.speedUpAfter, down: state.settings.slowDownAfter,
         upStepMs: state.settings.speedUpStepMs, downStepMs: state.settings.slowDownStepMs },
       avgSpeedMs: state.isiSampleCount ? (state.isiSum / state.isiSampleCount) : null,
@@ -5392,11 +5410,13 @@
     if (stats.mode === 'adaptive') {
       el.finalSpeed.textContent = stats.speedScoreMs === null ? '\u2013' : Math.round(stats.speedScoreMs) + ' ms';
       el.speedScoreLabel.textContent = stats.speedScoreMs === null
-        ? 'Speed score (needs more reversals)' : 'Speed score (last ' + stats.speedScoreUsed + ' reversals)';
+        ? 'Speed score (needs more reversals)' : 'Speed score (' + (stats.reversalAvgAll ? 'all ' : 'last ') + stats.speedScoreUsed + ' reversals)';
       el.reversalNote.classList.remove('hidden');
       el.reversalNote.textContent = stats.reversals.length
         ? 'Reversal speeds (ms): ' + stats.reversals.map(function (r, i) { return i < stats.reversalSkip ? '(' + r.ms + ')' : String(r.ms); }).join(' \u00b7 ') +
-          ' \u2014 brackets are skipped, and the score averages the last ' + stats.reversalAvgCount + ' of the rest.'
+          ' \u2014 ' + (stats.reversalSkip ? 'brackets are skipped, and the score ' : 'the score ') +
+          (stats.reversalAvgAll ? 'averages all' + (stats.reversalSkip ? ' of the rest.' : ' of them.')
+            : 'averages the last ' + stats.reversalAvgCount + (stats.reversalSkip ? ' of the rest.' : '.'))
         : 'The speed never changed direction, so there were no reversals to score.';
     } else {
       el.finalSpeed.textContent = stats.finalSpeedMs + ' ms';
@@ -6969,8 +6989,8 @@
       var adaptive = 'The gap between digits starts at <strong>' + s.startingSpeedMs + ' ms</strong> and ' +
         'moves with you: ' + s.speedUpAfter + ' correct in a row shortens it by ' + s.speedUpStepMs + ' ms, ' +
         (s.slowDownAfter === 1 ? 'a wrong answer' : s.slowDownAfter + ' wrong in a row') + ' stretches it ' +
-        'back out by ' + s.slowDownStepMs + ' ms. Your speed score is the average speed at the last ' + s.reversalAvgCount +
-        ' reversals (turning points), skipping the first ' + s.reversalSkip + '.';
+        'back out by ' + s.slowDownStepMs + ' ms. Your speed score is the average speed at ' + (s.reversalAvgAll ? 'all' : 'the last ' + s.reversalAvgCount) +
+        ' reversals (turning points)' + (s.reversalSkip ? ', skipping the first ' + s.reversalSkip : '') + '.';
       var limits = [];
       if (s.adaptiveFloorEnabled) limits.push('never faster than ' + s.adaptiveFloorMs + ' ms');
       if (s.adaptiveCeilingEnabled) limits.push('never slower than ' + s.adaptiveCeilingMs + ' ms');
