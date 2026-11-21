@@ -997,6 +997,10 @@
   .stair-all { display: inline-flex; align-items: center; gap: 5px; margin-right: 8px; font-size: 0.85rem; color: var(--text-muted); cursor: pointer; }
   .bound-input-wrap input[type="number"]:disabled { opacity: 0.4; }
 
+  .seq-tile { font-size: 1.8rem; }
+  .seq-tile.on { background: var(--amber); color: #1a1206; border-color: var(--amber); }
+  #seq-cancel-btn { margin-top: 8px; }
+
   /* ---------- Report ---------- */
   #report-screen { align-items: center; justify-content: center; padding: 32px 20px; }
   .report-panel { width: 100%; max-width: 620px; padding: 32px; text-align: center; }
@@ -1459,6 +1463,24 @@
                   <span class="setting-desc">At least one stays on. Division only uses whole-number answers; only subtraction can go negative.</span>
                   <div class="chip-group" id="arith-ops-group"></div>
                 </div>
+                <div class="setting setting-toggle">
+                  <label class="setting-text" for="arith-seq-toggle">
+                    <span class="setting-title">Sequence mode (prospective memory)</span>
+                    <span class="setting-desc">No symbol is shown. You get a sequence of operations before the session and apply them in order, one per trial, from memory. Now and then a symbol interrupts and replaces that trial's operation.</span>
+                  </label>
+                  <label class="switch"><input type="checkbox" id="arith-seq-toggle"><span class="switch-track"></span></label>
+                </div>
+                <div class="hidden" id="arith-seq-options">
+                  <div id="arith-seq-fields"></div>
+                  <div class="setting">
+                    <span class="setting-title">Show-sequence key</span>
+                    <span class="setting-desc">Pauses the game and shows the sequence with the current trial highlighted. Click, then press any key.</span>
+                    <div class="key-rebind-row">
+                      <button type="button" class="key-rebind-btn" id="seq-key-btn"><span class="key-rebind-label">Show sequence</span><span class="key-cap" id="seq-key-cap">S</span></button>
+                    </div>
+                  </div>
+                  <p class="setting-note" id="arith-seq-note"></p>
+                </div>
               </div>
             </div>
 
@@ -1829,6 +1851,7 @@
         <span class="stat-value mono" id="speed-readout">— ms</span>
       </div>
       <div class="top-bar-controls">
+        <button type="button" id="seq-open-btn" class="btn btn-ghost hidden">Sequence</button>
         <button type="button" id="pmem-open-btn" class="btn btn-ghost hidden">Command</button>
         <button id="pause-btn" class="btn btn-ghost">Pause</button>
         <button id="end-btn" class="btn btn-danger-ghost">End</button>
@@ -1879,6 +1902,15 @@
       </div>
     </div>
 
+    <div class="pmem-overlay hidden" id="seq-overlay">
+      <div class="panel pmem-panel">
+        <h2 id="seq-title">Your sequence</h2>
+        <p class="pmem-sub" id="seq-sub"></p>
+        <div class="pmem-tiles" id="seq-tiles"></div>
+        <button type="button" class="btn btn-primary btn-block" id="seq-close-btn">Start</button>
+        <button type="button" class="btn btn-ghost btn-block" id="seq-cancel-btn">Back</button>
+      </div>
+    </div>
     <div class="pmem-overlay hidden" id="pmem-rule-overlay">
       <div class="panel pmem-panel">
         <h2>Remember this</h2>
@@ -1939,6 +1971,7 @@
         <div class="stat-card hidden" id="time-crunch-resumed-card"><div class="value mono" id="time-crunch-resumed">–</div><div class="label">Time-outs resumed</div></div>
       </div>
 
+      <p class="setting-note hidden" id="seq-report-note"></p>
       <p class="setting-note hidden" id="reversal-note"></p>
 
       <div class="pmem-report hidden" id="pmem-report">
@@ -2496,6 +2529,9 @@
     reversalAvgAll: false, // true = ignore reversalAvgCount and average every reversal left after the skip
     stairShow: false, // UI only: whether the advanced block is expanded in the menu (its values apply either way)
     arithMode: false,
+    // Sub-option of arithMode (arithmetic prospective memory): a random sequence of operations is shown before the
+    // session and applied from memory, one slot per judged trial; a symbol sometimes interrupts one trial.
+    arithSeq: false, arithSeqLen: 4, arithSeqChance: 15, arithSeqGapSec: 5, seqKey: 'KeyS',
     arithOps: { add: true, sub: true, mul: true, div: true },
     // Prospective memory mode — see the "Arithmetic mode + Prospective memory" section.
     pmemMode: false,
@@ -3697,7 +3733,7 @@
     trial.stimulusShown = true;
     trial.onsetTime = performance.now();
     showStimulus(trial.displayValue);
-    setOpSymbol(trial.arithOp, trial.backK);
+    setOpSymbol(trial.arithShow, trial.backK);
     ewmtShowImage(trial.ewmtImageUrl);
     showTimerId = null;
     state.showStimulusAt = null;
@@ -4156,9 +4192,10 @@
     var digit, priorDigit, dichoticMeta = null;
     var digitOnset = when; // when the digit(s) actually sound - trails `when` on a switch trial (cue beep first)
     var backDist = getBackDistance();
-    var arithOp = state.settings.arithMode ? pickArithOp() : null;
     var backK = (state.settings.nBackMode && state.settings.nBackVariable) ? pickBackK() : null; // variable n-back
     if (backK) backDist = backK;
+    var arith = pickTrialArith(backDist); // which operation this trial uses, and whether its symbol is shown
+    var arithOp = arith.op;
 
     // Variable loudness: one roll per trial, not per ear/call — so a
     // dichotic trial's two ears share the same level rather than each
@@ -4261,7 +4298,10 @@
       dichotic: dichoticMeta,
       ewmtImageUrl: null,
       arithOp: arithOp,
-      backK: backK
+      backK: backK,
+      arithShow: arith.show,
+      seqSlot: arith.slot,
+      seqOver: arith.over
     };
 
     // Defensively clear any stale show/hide timers before arming this trial's.
@@ -4298,6 +4338,7 @@
 
     currentTrial = trial;
     if (state.settings.pmemMode && state.pmem) pmemOnTrial(trial, digitOnset, isi);
+    if (state.seq) seqOnTrial(trial, digitOnset, isi);
     armStimulusTimers(trial);
     // This trial is committed: the next interruption roll is allowed to
     // fire again, and the persevere button counts one trial closer to
@@ -4473,6 +4514,17 @@
     o.pmemRuleSec = n(s.pmemRuleSec, D.pmemRuleSec, 2, 60);
     o.pmemInputSec = n(s.pmemInputSec, D.pmemInputSec, 3, 60);
     o.pmemFeedback = s.pmemFeedback === undefined ? D.pmemFeedback : !!s.pmemFeedback;
+    o.arithSeq = !!s.arithSeq;
+    o.arithSeqLen = n(s.arithSeqLen, D.arithSeqLen, 2, 12);
+    o.arithSeqChance = n(s.arithSeqChance, D.arithSeqChance, 0, 100);
+    o.arithSeqGapSec = n(s.arithSeqGapSec, D.arithSeqGapSec, 0, 120);
+    var sk = (typeof s.seqKey === 'string' && !RESERVED_KEY_CODES[s.seqKey]) ? s.seqKey : D.seqKey;
+    if (sk === o.matchKey || sk === o.noMatchKey || sk === o.pmemKey) { // all four keys stay distinct
+      sk = ['KeyS', 'KeyQ', 'KeyW', 'KeyE', 'KeyR', 'KeyT'].filter(function (c) {
+        return c !== o.matchKey && c !== o.noMatchKey && c !== o.pmemKey;
+      })[0];
+    }
+    o.seqKey = sk;
     return o;
   }
 
@@ -4671,6 +4723,7 @@
   }
   function pmemHideUi() {
     clearInterval(pmemRuleTimerId); clearInterval(pmemInputTimerId); clearTimeout(pmemCloseTimerId);
+    seqHideUi();
     if (el.pmemRuleOverlay) { el.pmemRuleOverlay.classList.add('hidden'); el.pmemInputOverlay.classList.add('hidden'); }
   }
 
@@ -4757,6 +4810,7 @@
     el.nbackVariableToggle.checked = s.nBackVariable;
     syncNBackFloorUi();
     syncStairUi();
+    syncSeqUi();
     el.arithToggle.checked = s.arithMode;
     el.arithOptions.classList.toggle('hidden', !s.arithMode);
     Array.prototype.forEach.call(el.arithOpsGroup.querySelectorAll('.chip-btn'), function (b) {
@@ -4776,6 +4830,7 @@
   function wireNewModes() {
     buildNewModesUi();
     wireStairUi();
+    wireSeqUi();
     el.arithToggle.addEventListener('change', function () { state.settings.arithMode = el.arithToggle.checked; syncNewModesUi(); persistSettings(); });
     el.arithOpsGroup.addEventListener('click', function (e) {
       var b = e.target.closest('.chip-btn');
@@ -4990,6 +5045,217 @@
     });
   }
 
+  // ============================================================
+  // Arithmetic sequence mode (arithmetic prospective memory)
+  // ============================================================
+  // A random sequence of operations is shown before the session. Trial by trial the player applies the next one
+  // from memory (nothing is displayed); every JUDGED trial uses up one slot, interrupted or not. An interruption
+  // flashes a different operation's symbol above the number box and replaces that one trial's operation — the
+  // sequence never waits for it, so the next trial uses the next slot.
+  function seqSymbols(ops) { return ops.map(function (o) { return ARITH_SYMBOLS[o]; }); }
+
+  // Builds the sequence from the enabled operations as evenly as possible. While it has no more symbols than there are
+  // operations turned on (4 symbols or fewer with all four on) no symbol repeats at all; beyond that every operation
+  // still appears and the extra slots are spread as evenly as they can be. The order is random.
+  function seqShuffle(a) {
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1)), t = a[i];
+      a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  }
+  function seqGenerate() {
+    var s = state.settings, on = ARITH_KEYS.filter(function (k) { return s.arithOps[k]; });
+    if (!on.length) on = ['add'];
+    var pool = seqShuffle(on.slice()), ops = [];
+    for (var i = 0; i < s.arithSeqLen; i++) ops.push(pool[i % pool.length]);
+    return seqShuffle(ops);
+  }
+  function seqFresh() {
+    var s = state.settings, on = ARITH_KEYS.filter(function (k) { return s.arithOps[k]; });
+    if (!on.length) on = ['add'];
+    var ops = state.seqPending || seqGenerate(); // the one the player was just shown
+    state.seqPending = null;
+    return { ops: ops, on: on, pos: 0, playMs: 0, lastIntMs: 0, interruptions: 0, peeks: 0, recent: [] };
+  }
+
+  // Chooses this trial's operation. `show` is what gets flashed above the number box: everything in plain
+  // arithmetic mode, only the interrupting symbol in sequence mode.
+  function pickTrialArith(backDist) {
+    var s = state.settings, none = { op: null, show: null, slot: null, over: false };
+    if (!s.arithMode) return none;
+    if (!(s.arithSeq && state.seq)) { var plain = pickArithOp(); return { op: plain, show: plain, slot: null, over: false }; }
+    var sq = state.seq;
+    if (peekPrior(backDist) === null) return none; // nothing to judge on this trial, so no slot is used up
+    var slot = sq.pos % sq.ops.length, base = sq.ops[slot], op = base;
+    var over = sq.on.length > 1 && (sq.playMs - sq.lastIntMs) >= s.arithSeqGapSec * 1000 &&
+      Math.random() * 100 < s.arithSeqChance;
+    if (over) {
+      var others = sq.on.filter(function (k) { return k !== base; });
+      op = others[Math.floor(Math.random() * others.length)];
+      sq.interruptions++;
+      sq.lastIntMs = sq.playMs;
+    }
+    sq.pos++; // used up either way — an interruption never pushes the sequence back
+    return { op: op, show: over ? op : null, slot: slot, over: over };
+  }
+
+  // Trial bookkeeping. Play time (the sum of trial lengths) drives the interruption gap, so pauses never count;
+  // `recent` remembers when each trial really sounded, because the next one is queued slightly early.
+  function seqOnTrial(trial, onset, isi) {
+    var sq = state.seq;
+    sq.playMs += isi;
+    sq.recent.push({ slot: trial.seqSlot, onset: onset });
+    if (sq.recent.length > 4) sq.recent.shift();
+  }
+
+  // The slot of the trial that is on right now. Before any judged trial has sounded it is the slot the next
+  // judged trial will use.
+  function seqCurrentSlot() {
+    var sq = state.seq, now = audioCtx ? audioCtx.currentTime : 0, cur = -1, i;
+    for (i = 0; i < sq.recent.length; i++) if (sq.recent[i].onset <= now) cur = i;
+    if (cur >= 0 && sq.recent[cur].slot !== null) return sq.recent[cur].slot;
+    for (i = cur + 1; i < sq.recent.length; i++) if (sq.recent[i].slot !== null) return sq.recent[i].slot;
+    return sq.pos % sq.ops.length;
+  }
+
+  function seqPct(c, t) { return t ? Math.round(c / t * 100) + '% (' + c + '/' + t + ')' : '\u2013'; }
+  function seqStats() {
+    var sq = state.seq;
+    if (!sq || !state.settings.arithMode || !state.settings.arithSeq) return null;
+    var a = { t: 0, c: 0 }, b = { t: 0, c: 0 };
+    state.results.forEach(function (tr) {
+      if (tr.seqSlot == null) return;
+      var x = tr.seqOver ? b : a;
+      x.t++;
+      if (tr.correct) x.c++;
+    });
+    return { len: sq.ops.length, sym: seqSymbols(sq.ops).join(' '), interruptions: sq.interruptions, peeks: sq.peeks,
+      seqTotal: a.t, seqCorrect: a.c, overTotal: b.t, overCorrect: b.c };
+  }
+
+  // ---------- the sequence panel: shown before the session ("brief") and on demand mid-session ("peek") ----------
+  function seqRenderTiles(ops, on) {
+    el.seqTiles.innerHTML = ops.map(function (o, i) {
+      return '<span class="pmem-tile seq-tile' + (i === on ? ' on' : '') + '"' + (i === on ? ' aria-current="true"' : '') + '>' +
+        ARITH_SYMBOLS[o] + '</span>';
+    }).join('');
+  }
+
+  function seqStartOrBrief() {
+    var s = state.settings;
+    if (!(s.arithMode && s.arithSeq)) { startSession(); return; }
+    if (state.seqMode) return;
+    state.seqPending = seqGenerate();
+    seqRenderTiles(state.seqPending, -1);
+    el.seqTitle.textContent = 'Your sequence';
+    el.seqSub.textContent = 'Do these operations in order, one per trial, and loop back to the start after the last. No symbol will be ' +
+      'shown, so remember it. If a symbol does flash above the grid, do that operation for that one trial only \u2014 the sequence carries on from the next slot.';
+    el.seqCloseBtn.textContent = 'Start';
+    el.seqCancelBtn.classList.remove('hidden');
+    state.seqMode = 'brief';
+    el.seqOverlay.classList.remove('hidden');
+  }
+
+  // A real pause (audio clock suspended, trial held mid-flight), like the command window.
+  function seqPeek() {
+    var sq = state.seq;
+    if (!sq || state.seqMode || state.paused || state.interrupted || state.screen !== 'playing') return;
+    var cur = seqCurrentSlot();
+    pauseSession();
+    if (!state.paused) return;
+    el.pauseOverlay.classList.add('hidden');
+    sq.peeks++;
+    seqRenderTiles(sq.ops, cur);
+    el.seqTitle.textContent = 'Where you are';
+    el.seqSub.textContent = 'The highlighted symbol is this trial\u2019s place in the sequence. The clock is stopped.';
+    el.seqCloseBtn.textContent = 'Continue';
+    el.seqCancelBtn.classList.add('hidden');
+    state.seqMode = 'peek';
+    el.seqOverlay.classList.remove('hidden');
+  }
+
+  function seqClose(go) {
+    var mode = state.seqMode;
+    state.seqMode = null;
+    el.seqOverlay.classList.add('hidden');
+    if (mode === 'brief') { if (go) startSession(); else state.seqPending = null; }
+    else if (mode === 'peek' && state.paused) resumeSession();
+  }
+  function seqHideUi() {
+    if (el.seqOverlay) el.seqOverlay.classList.add('hidden');
+    state.seqMode = null; // deliberately leaves seqPending alone: startSession still needs it
+  }
+
+  // While the panel is open it owns the keyboard (capture phase, so it also beats the normal play handler).
+  window.addEventListener('keydown', function (e) {
+    if (rebindingAction) return;
+    var mode = state.seqMode, s = state.settings;
+    if (mode) {
+      var closes = e.key === 'Enter' || e.key === 'Escape' || (mode === 'peek' && e.code === s.seqKey);
+      if (closes || mode === 'peek') { e.preventDefault(); e.stopImmediatePropagation(); }
+      if (closes && !e.repeat) seqClose(mode === 'peek' || e.key === 'Enter');
+      return;
+    }
+    if (!state.seq || !s.arithMode || !s.arithSeq || e.code !== s.seqKey) return;
+    if (state.screen !== 'playing' || state.paused || state.interrupted) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (!e.repeat) seqPeek();
+  }, true);
+
+  // ---------- menu ----------
+  var SEQ_FIELDS = [
+    { k: 'arithSeqLen', label: 'Symbols in the sequence', min: 2, max: 12, unit: '' },
+    { k: 'arithSeqChance', label: 'Chance a trial is interrupted', min: 0, max: 100, unit: '%' },
+    { k: 'arithSeqGapSec', label: 'Minimum time between interruptions', min: 0, max: 120, unit: ' s' }
+  ];
+
+  function seqUpdateNote() {
+    var s = state.settings;
+    if (!s || !el.arithSeqNote) return;
+    var onCount = ARITH_KEYS.filter(function (k) { return s.arithOps[k]; }).length, t;
+    if (onCount < 2) t = 'Only one operation is turned on, so the sequence cannot vary and nothing can interrupt it. Turn on at least two operations above.';
+    else if (s.arithSeqChance === 0) t = 'Interruptions are off (0% chance).';
+    else if (s.durationSec <= s.arithSeqGapSec) t = 'The minimum gap is as long as the whole session, so no interruption can happen.';
+    else t = 'Once the minimum gap has passed, each trial that gets judged has a ' + s.arithSeqChance + '% chance of being interrupted.';
+    if (onCount >= 2) {
+      if (s.arithSeqLen <= onCount) t = 'No symbol repeats in the sequence. ' + t;
+      else if (s.arithSeqLen <= 4) t = 'Only ' + onCount + ' operations are on, so a ' + s.arithSeqLen +
+        '-symbol sequence has to repeat a symbol \u2014 turn on ' + s.arithSeqLen + ' operations to avoid that. ' + t;
+    }
+    el.arithSeqNote.textContent = t;
+  }
+
+  function syncSeqUi() {
+    var s = state.settings;
+    el.arithSeqToggle.checked = s.arithSeq;
+    el.arithSeqOptions.classList.toggle('hidden', !s.arithSeq);
+    SEQ_FIELDS.forEach(function (f) {
+      q('seq-f-' + f.k).value = s[f.k];
+      q('seq-v-' + f.k).textContent = s[f.k] + f.unit;
+    });
+    seqUpdateNote();
+  }
+
+  function wireSeqUi() {
+    el.arithSeqFields.innerHTML = SEQ_FIELDS.map(function (f) {
+      return '<div class="setting"><div class="setting-row"><label class="setting-title" for="seq-f-' + f.k + '">' + f.label +
+        '</label><span class="readout" id="seq-v-' + f.k + '"></span></div><input type="range" id="seq-f-' + f.k +
+        '" min="' + f.min + '" max="' + f.max + '" step="1"></div>';
+    }).join('');
+    el.arithSeqToggle.addEventListener('change', function () { state.settings.arithSeq = el.arithSeqToggle.checked; syncSeqUi(); persistSettings(); });
+    el.arithSeqFields.addEventListener('input', function (e) {
+      var f = SEQ_FIELDS.filter(function (x) { return 'seq-f-' + x.k === e.target.id; })[0];
+      if (!f) return;
+      state.settings[f.k] = parseInt(e.target.value, 10);
+      syncSeqUi(); persistSettings();
+    });
+    el.seqKeyBtn.addEventListener('click', function () { startRebind('seq'); });
+    el.seqOpenBtn.addEventListener('click', function () { el.seqOpenBtn.blur(); seqPeek(); });
+    el.seqCloseBtn.addEventListener('click', function () { el.seqCloseBtn.blur(); seqClose(true); });
+    el.seqCancelBtn.addEventListener('click', function () { el.seqCancelBtn.blur(); seqClose(false); });
+  }
+
   var rebindingAction = null; // 'match' | 'noMatch' | null — see startRebind/applyKeyBinding
 
   document.addEventListener('keydown', function (e) {
@@ -5040,6 +5306,7 @@
     el.hintRightKey.textContent = keyCodeLabel(state.settings.noMatchKey);
     el.hintSkip.classList.toggle('hidden', !state.settings.spacebarSkip);
     if (el.pmemOpenBtn) el.pmemOpenBtn.textContent = 'Command · ' + keyCodeLabel(state.settings.pmemKey);
+    if (el.seqOpenBtn) el.seqOpenBtn.textContent = 'Sequence · ' + keyCodeLabel(state.settings.seqKey);
   }
 
   // Live "you're pressing this key" feedback for the play-screen keycaps
@@ -5117,6 +5384,8 @@
     state.slowestISI = state.currentISI;
     state.reversals = [];
     state.lastDir = 0;
+    state.seq = (state.settings.arithMode && state.settings.arithSeq) ? seqFresh() : null;
+    el.seqOpenBtn.classList.toggle('hidden', !state.seq);
     state.isiSum = 0;
     state.isiSampleCount = 0;
     state.mistakePenaltyStreak = 0;
@@ -5364,6 +5633,8 @@
       // makes no difference to a session and shouldn't tag one.
       bgVideoMode: !!(state.settings.bgVideoMode && bgVideoSummary().ok > 0),
       arithMode: state.settings.arithMode,
+      arithSeq: !!(state.settings.arithMode && state.settings.arithSeq),
+      seq: seqStats(),
       pmem: pmemStats(),
       interruptionMode: state.settings.interruptionMode,
       interruptionChance: state.settings.interruptionChance,
@@ -5471,6 +5742,14 @@
       el.pmemWrong.textContent = pmr.wrong;
       el.pmemMissed.textContent = pmr.missed;
       el.pmemFa.textContent = pmr.falseAlarms;
+    }
+
+    var sqs = stats.seq;
+    el.seqReportNote.classList.toggle('hidden', !sqs);
+    if (sqs) {
+      el.seqReportNote.textContent = 'Sequence ' + sqs.sym + ' \u00b7 on the sequence ' + seqPct(sqs.seqCorrect, sqs.seqTotal) +
+        ' \u00b7 interruptions ' + seqPct(sqs.overCorrect, sqs.overTotal) +
+        ' \u00b7 looked at the sequence ' + sqs.peeks + (sqs.peeks === 1 ? ' time' : ' times');
     }
 
     appendHistoryRecord(stats);
@@ -5701,7 +5980,7 @@
       if (rec.nBackMode) tagParts.push(rec.nBackVariable ? 'Variable ' + (rec.nBackVariableFloor > 1 ? rec.nBackVariableFloor + '\u2013' + rec.nBackLevel + ' back' : rec.nBackLevel + '-back') : rec.nBackLevel + '-back');
       if (rec.ewmtMode) tagParts.push('eWMT');
       if (rec.cctMode) tagParts.push('CCT');
-      if (rec.arithMode) tagParts.push('Arithmetic');
+      if (rec.arithMode) tagParts.push(rec.arithSeq ? 'Arithmetic sequence' : 'Arithmetic');
       if (rec.pmem) tagParts.push('Commands');
       if (rec.bgVideoMode) tagParts.push('Video BG');
       if (rec.interruptionMode) {
@@ -6880,6 +7159,7 @@
   }
 
   function renderSettingsExplainer() {
+    seqUpdateNote();
     syncStairUi();
     pmemUpdateNote();
     if (!state.settings || !el.settingsExplainer) return;
@@ -7152,10 +7432,28 @@
     if (s.arithMode) {
       var opsOn = ARITH_KEYS.filter(function (k) { return s.arithOps[k]; }).map(function (k) { return ARITH_SYMBOLS[k]; }).join(' ');
       blocks.push([explainLine('Arithmetic mode',
-        'Each trial one symbol (<strong>' + opsOn + '</strong>) flashes above the number box, changing from trial to trial. ' +
+        (s.arithSeq ? 'Each trial has an operation to apply (<strong>' + opsOn + '</strong>), set by your sequence \u2014 see below. '
+          : 'Each trial one symbol (<strong>' + opsOn + '</strong>) flashes above the number box, changing from trial to trial. ') +
         'Apply it to the earlier digit and the digit just spoken, earlier digit first — 5 then 6 with × means <strong>30</strong> — ' +
         'then judge the number that appears against that result. Spoken digits stay 1–9; division only ever uses digits that ' +
         'divide evenly (no decimals) and only subtraction can go negative.')]);
+    }
+    if (s.arithMode && s.arithSeq) {
+      blocks.push([
+        explainLine('Arithmetic sequence (prospective memory)',
+          'Before each session you are shown a random sequence of <strong>' + s.arithSeqLen + '</strong> operations, like ' +
+          '<strong>+ + \u2212 \u00d7 + \u00f7</strong>. Do them in that order, one per trial, from memory \u2014 no symbol is shown \u2014 ' +
+          'and loop back to the start after the last. Only trials that get judged use up a slot, so the first operation is for ' +
+          'the first number you are asked about. A sequence of four symbols or fewer never repeats a symbol (as long as that many ' +
+          'operations are turned on); longer ones have to, but still use every operation.'),
+        '<p>Every so often a symbol <strong>interrupts</strong>: it flashes above the number box and you do <em>that</em> operation ' +
+          'for that one trial instead of the sequence\u2019s. The sequence does <strong>not</strong> wait for you \u2014 the slot that was ' +
+          'interrupted is used up, so with <strong>+ \u2212 +</strong> an interruption on the \u2212 means the next trial is the second +, ' +
+          'not the \u2212. Each judged trial has a <strong>' + s.arithSeqChance + '%</strong> chance, and never sooner than <strong>' +
+          s.arithSeqGapSec + ' s</strong> after the start or the last interruption.</p>',
+        '<p>Lost track? Press ' + keyTag(s.seqKey) + ' to pause and see the sequence with the current trial\u2019s slot highlighted ' +
+          '(the play screen has a button for it too). The clock stops while you look, and the report counts how often you did.</p>'
+      ]);
     }
     if (s.pmemMode) {
       blocks.push([
@@ -7229,10 +7527,20 @@
   // the pair sane" idea as the adaptive floor/ceiling and variable
   // loudness min/max pairs elsewhere in this file.
   function applyKeyBinding(action, code) {
+    if (action === 'seq') { // the sequence key can't share a key with any other action
+      var oldSeq = state.settings.seqKey, st = state.settings;
+      if (st.matchKey === code) st.matchKey = oldSeq;
+      else if (st.noMatchKey === code) st.noMatchKey = oldSeq;
+      else if (st.pmemKey === code) st.pmemKey = oldSeq;
+      st.seqKey = code;
+      applyKeyHintLabels(); updateKeyBindButtons(); persistSettings();
+      return;
+    }
     if (action === 'pmem') { // the command-window key can't share a key with either response key
       var oldPmem = state.settings.pmemKey;
       if (state.settings.matchKey === code) state.settings.matchKey = oldPmem;
       else if (state.settings.noMatchKey === code) state.settings.noMatchKey = oldPmem;
+      else if (state.settings.seqKey === code) state.settings.seqKey = oldPmem;
       state.settings.pmemKey = code;
       applyKeyHintLabels(); updateKeyBindButtons(); persistSettings();
       return;
@@ -7244,6 +7552,7 @@
       state.settings[otherKey] = state.settings[thisKey];
     }
     if (state.settings.pmemKey === code) state.settings.pmemKey = state.settings[thisKey];
+    if (state.settings.seqKey === code) state.settings.seqKey = state.settings[thisKey];
     state.settings[thisKey] = code;
     applyKeyHintLabels();
     updateKeyBindButtons();
@@ -7266,6 +7575,8 @@
     if (el.pmemKeyBtn) {
       el.pmemKeyBtn.classList.toggle('listening', rebindingAction === 'pmem');
       el.pmemKeyCap.textContent = (rebindingAction === 'pmem') ? '…' : keyCodeLabel(state.settings.pmemKey);
+      el.seqKeyBtn.classList.toggle('listening', rebindingAction === 'seq');
+      el.seqKeyCap.textContent = (rebindingAction === 'seq') ? '…' : keyCodeLabel(state.settings.seqKey);
     }
   }
 
@@ -8129,7 +8440,7 @@
 
     el.startBtn.addEventListener('click', function () {
       el.startBtn.blur(); // otherwise a later Space or Enter re-clicks it mid-session
-      startSession();
+      seqStartOrBrief(); // shows the sequence first when sequence mode is on, then calls startSession
     });
   }
 
@@ -8367,7 +8678,7 @@
      'pmemRuleBar', 'pmemRuleExitBtn', 'pmemInputOverlay', 'pmemInputTimer', 'pmemInputBar', 'pmemTyped', 'pmemResult',
      'pmemPad', 'pmemBackBtn', 'pmemSubmitBtn', 'pmemFlash', 'pmemFlashText', 'pmemReport', 'pmemAcc', 'pmemCorrect',
      'pmemWrong', 'pmemMissed', 'pmemFa', 'arithToggle', 'arithOptions', 'arithOpsGroup', 'pmemToggle', 'pmemOptions',
-     'pmemKeyBtn', 'pmemKeyCap', 'pmemFields', 'pmemFeedbackToggle', 'pmemNote', 'nbackVariableToggle', 'nbackFloorField', 'nbackFloorSlider', 'nbackFloorValue', 'speedScoreLabel', 'reversalNote', 'stairToggle', 'stairOptions', 'stairDefaultsBtn', 'stairSuggestedBtn', 'stairFields', 'stairNote', 'speedModeNote'].forEach(function (n) {
+     'pmemKeyBtn', 'pmemKeyCap', 'pmemFields', 'pmemFeedbackToggle', 'pmemNote', 'nbackVariableToggle', 'nbackFloorField', 'nbackFloorSlider', 'nbackFloorValue', 'speedScoreLabel', 'reversalNote', 'stairToggle', 'stairOptions', 'stairDefaultsBtn', 'stairSuggestedBtn', 'stairFields', 'stairNote', 'speedModeNote', 'arithSeqToggle', 'arithSeqOptions', 'arithSeqFields', 'arithSeqNote', 'seqKeyBtn', 'seqKeyCap', 'seqOpenBtn', 'seqOverlay', 'seqTitle', 'seqSub', 'seqTiles', 'seqCloseBtn', 'seqCancelBtn', 'seqReportNote'].forEach(function (n) {
       el[n] = q(n.replace(/([A-Z])/g, '-$1').toLowerCase());
     });
     el.numberDisplay = q('number-display');
