@@ -1902,15 +1902,6 @@
       </div>
     </div>
 
-    <div class="pmem-overlay hidden" id="seq-overlay">
-      <div class="panel pmem-panel">
-        <h2 id="seq-title">Your sequence</h2>
-        <p class="pmem-sub" id="seq-sub"></p>
-        <div class="pmem-tiles" id="seq-tiles"></div>
-        <button type="button" class="btn btn-primary btn-block" id="seq-close-btn">Start</button>
-        <button type="button" class="btn btn-ghost btn-block" id="seq-cancel-btn">Back</button>
-      </div>
-    </div>
     <div class="pmem-overlay hidden" id="pmem-rule-overlay">
       <div class="panel pmem-panel">
         <h2>Remember this</h2>
@@ -2031,6 +2022,17 @@
       <button id="graph-back-btn" class="btn btn-primary btn-block">Back to history</button>
     </div>
   </section>
+
+  <!-- Sequence panel: shown over the menu before a session (and over play on demand), so it must NOT live inside the play screen. -->
+    <div class="pmem-overlay hidden" id="seq-overlay">
+      <div class="panel pmem-panel">
+        <h2 id="seq-title">Your sequence</h2>
+        <p class="pmem-sub" id="seq-sub"></p>
+        <div class="pmem-tiles" id="seq-tiles"></div>
+        <button type="button" class="btn btn-primary btn-block" id="seq-close-btn">Start</button>
+        <button type="button" class="btn btn-ghost btn-block" id="seq-cancel-btn">Back</button>
+      </div>
+    </div>
 
 </div>
 
